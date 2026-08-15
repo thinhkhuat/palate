@@ -1,6 +1,6 @@
 .palate/
 dist/
-palate
+/palate
 *.db
 *.db-shm
 *.db-wal

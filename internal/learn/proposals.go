@@ -74,5 +74,24 @@ func PromoteProposal(conn *sql.DB, proposalID, asSignal string, cfg interface {
 	if err != nil {
 		return nil, err
 	}
+	_ = sig
+	_ = w
 	return &p, nil
+}
+
+func PromoteProposalWithApply(conn *sql.DB, proposalID, asSignal string, cfg interface {
+	WeightFor(string) float64
+}, apply func(Signal) error) (*Proposal, error) {
+	p, err := PromoteProposal(conn, proposalID, asSignal, cfg)
+	if err != nil {
+		return nil, err
+	}
+	sig := Signal{Type: SignalType(asSignal), Statement: p.Content, Category: p.Category}
+	if sig.Type == "" {
+		sig.Type = SignalStatedPreference
+	}
+	if err := apply(sig); err != nil {
+		return nil, err
+	}
+	return p, nil
 }

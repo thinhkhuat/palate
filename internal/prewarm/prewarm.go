@@ -69,23 +69,31 @@ func GoalPrewarm(conn *sql.DB, cfg config.Config, userPrompt string) (Block, boo
 	if len(keywords) == 0 {
 		return Block{Scope: "goal"}, false, nil
 	}
-	like := "%" + keywords[0] + "%"
-	rows, err := conn.Query(`
-		SELECT category, statement, confidence FROM preferences
-		WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
-		ORDER BY confidence DESC LIMIT 5`, like, like)
-	if err != nil {
-		return Block{Scope: "goal"}, false, err
-	}
-	defer rows.Close()
 	var lines []string
-	for rows.Next() {
-		var cat, stmt string
-		var conf float64
-		if err := rows.Scan(&cat, &stmt, &conf); err != nil {
+	var qerr error
+	for _, kw := range keywords {
+		like := "%" + kw + "%"
+		rows, err := conn.Query(`
+			SELECT category, statement, confidence FROM preferences
+			WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
+			ORDER BY confidence DESC LIMIT 5`, like, like)
+		if err != nil {
+			qerr = err
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- [%s] %s", cat, stmt))
+		for rows.Next() {
+			var cat, stmt string
+			var conf float64
+			if err := rows.Scan(&cat, &stmt, &conf); err != nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- [%s] %s", cat, stmt))
+		}
+		rows.Close()
+		if len(lines) > 0 {
+			break
+		}
+		_ = qerr
 	}
 	if len(lines) == 0 {
 		return Block{Scope: "goal"}, false, nil

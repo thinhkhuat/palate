@@ -12,6 +12,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/learn"
+	"github.com/thinhkhuat/palate/internal/safety"
+	"github.com/thinhkhuat/palate/internal/storage"
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
@@ -33,31 +36,152 @@ func registerTools(s *mcp.Server) {
 
 func handleRecall(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
 	q, _ := args["query"].(string)
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("recall: %q (stub — wired to storage.Recall)", q)}},
-	}, nil, nil
+	cfg, _ := config.Load("config.yaml")
+	db, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("db error: %v", err)}}, IsError: true}, nil, nil
+	}
+	results, _ := storage.Recall(db, q, 10, false)
+	if len(results) == 0 {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "no results"}}, IsError: false}, nil, nil
+	}
+	var lines []string
+	for _, r := range results {
+		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)", r.Table, r.Content, r.Score))
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: strings.Join(lines, "\n")}}}, nil, nil
 }
+
 func handleRemember(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
 	c, _ := args["content"].(string)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("remember: %q", c)}}}, nil, nil
+	if safety.ContainsSecret(c) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "rejected: secret pattern"}}, IsError: true}, nil, nil
+	}
+	scan := safety.Scan(c)
+	if scan.Flagged && scan.Reason == "injection" {
+		c = scan.Cleaned
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("db error: %v", err)}}, IsError: true}, nil, nil
+	}
+	id, err := storage.Remember(db, c, "", 0.5, "working_memory")
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	storage.BumpHit(db, "explicit_remember")
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: id}}}, nil, nil
 }
+
 func handleCorrect(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "correct recorded"}}}, nil, nil
+	tried, _ := args["tried"].(string)
+	fix, _ := args["fix"].(string)
+	if fix == "" {
+		fix, _ = args["statement"].(string)
+	}
+	if fix == "" {
+		fix = tried
+	}
+	if fix == "" {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "missing fix/statement"}}, IsError: true}, nil, nil
+	}
+	if safety.ContainsSecret(fix) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "rejected: secret"}}, IsError: true}, nil, nil
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, _ := storage.Open(cfg.DBPath)
+	_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitCorrection, Statement: fix, Category: learn.InferCategoryFromStatement(fix)}, nil)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	storage.BumpHit(db, "explicit_correction")
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "correct recorded: " + fix}}}, nil, nil
 }
+
 func handlePrefer(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "prefer recorded"}}}, nil, nil
+	stmt, _ := args["statement"].(string)
+	if stmt == "" {
+		stmt, _ = args["content"].(string)
+	}
+	if stmt == "" {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "missing statement"}}, IsError: true}, nil, nil
+	}
+	if safety.ContainsSecret(stmt) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "rejected: secret"}}, IsError: true}, nil, nil
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, _ := storage.Open(cfg.DBPath)
+	_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	storage.BumpHit(db, "explicit_prefer")
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "prefer recorded: " + stmt}}}, nil, nil
 }
+
 func handleReject(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "reject recorded"}}}, nil, nil
+	stmt, _ := args["statement"].(string)
+	if stmt == "" {
+		stmt, _ = args["content"].(string)
+	}
+	if stmt == "" {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "missing statement"}}, IsError: true}, nil, nil
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, _ := storage.Open(cfg.DBPath)
+	_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitReject, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	storage.BumpHit(db, "explicit_reject")
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "reject recorded: " + stmt}}}, nil, nil
 }
+
 func handleAccept(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "accept recorded"}}}, nil, nil
+	stmt, _ := args["statement"].(string)
+	if stmt == "" {
+		stmt, _ = args["content"].(string)
+	}
+	if stmt == "" {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "missing statement"}}, IsError: true}, nil, nil
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, _ := storage.Open(cfg.DBPath)
+	_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitAccept, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	storage.BumpHit(db, "explicit_accept")
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "accept recorded: " + stmt}}}, nil, nil
 }
+
 func handleStats(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "stats: (stub)"}}}, nil, nil
+	cfg, _ := config.Load("config.yaml")
+	db, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("db error: %v", err)}}, IsError: true}, nil, nil
+	}
+	var wm, em, prefs, events int
+	_ = db.QueryRow(`SELECT count(*) FROM working_memory`).Scan(&wm)
+	_ = db.QueryRow(`SELECT count(*) FROM episodic_memory`).Scan(&em)
+	_ = db.QueryRow(`SELECT count(*) FROM preferences WHERE valid_until IS NULL`).Scan(&prefs)
+	_ = db.QueryRow(`SELECT count(*) FROM events`).Scan(&events)
+	msg := fmt.Sprintf("working: %d episodic: %d preferences: %d events: %d", wm, em, prefs, events)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: msg}}}, nil, nil
 }
+
 func handleForget(ctx context.Context, req *mcp.CallToolRequest, args map[string]interface{}) (*mcp.CallToolResult, interface{}, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "forget: (stub)"}}}, nil, nil
+	id, _ := args["id"].(string)
+	if id == "" {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "missing id"}}, IsError: true}, nil, nil
+	}
+	cfg, _ := config.Load("config.yaml")
+	db, _ := storage.Open(cfg.DBPath)
+	if err := storage.Forget(db, id); err != nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}, IsError: true}, nil, nil
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "forgot " + id}}}, nil, nil
 }
 
 func ServeStdio(cfg config.Config) error {
