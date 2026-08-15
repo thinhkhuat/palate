@@ -1,0 +1,36 @@
+db_path: .palate/palate.db
+c_floor: 0.1
+half_life_hours: 168
+learning_rate: 0.3
+weights:
+  explicit_correction: 1.0
+  user_diff: 0.6
+  explicit_reject: 0.9
+  stated_preference: 0.8
+  explicit_prefer: 0.8
+  explicit_accept: 0.6
+  model_edit: 0.4
+  imported: 0.4
+token_budgets:
+  prewarm_session: 500
+  prewarm_goal: 200
+  recall: 1000
+  index_lines: 200
+  index_bytes: 25600
+freshness:
+  enabled: false
+  t1_days: 30
+  t1_weight: 1.0
+  t2_days: 90
+  t2_weight: 0.5
+  t3_weight: 0.25
+  compress_chars: 300
+hybrid:
+  vec: 0.5
+  fts: 0.3
+  importance: 0.2
+  rrf_k: 60
+taxonomy_threshold: 5
+mcp:
+  token_env: PALATE_MCP_TOKEN
+  allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
