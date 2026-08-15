@@ -31,7 +31,7 @@ func truncateToTokens(s string, budget int) string {
 
 func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 	rows, err := conn.Query(`
-		SELECT category, statement, confidence, importance
+		SELECT category, statement, confidence, importance, trust_tier, provenance, last_verified_at
 		FROM preferences
 		WHERE valid_until IS NULL
 		ORDER BY confidence * importance DESC, id ASC
@@ -44,10 +44,15 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 	for rows.Next() {
 		var cat, stmt string
 		var conf, imp float64
-		if err := rows.Scan(&cat, &stmt, &conf, &imp); err != nil {
+		var trustTier, provenance, lastVerified sql.NullString
+		if err := rows.Scan(&cat, &stmt, &conf, &imp, &trustTier, &provenance, &lastVerified); err != nil {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)", cat, stmt, conf))
+		badge := ""
+		if trustTier.Valid && trustTier.String == "IMPORTED" {
+			badge = " [IMPORTED]"
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)%s", cat, stmt, conf, badge))
 	}
 	if len(lines) == 0 {
 		return Block{Content: "", Tokens: 0, Scope: "session"}, nil

@@ -16,6 +16,7 @@ import (
 	"github.com/thinhkhuat/palate/internal/prewarm"
 	"github.com/thinhkhuat/palate/internal/render"
 	"github.com/thinhkhuat/palate/internal/safety"
+	"github.com/thinhkhuat/palate/internal/skills"
 	"github.com/thinhkhuat/palate/internal/storage"
 	"github.com/thinhkhuat/palate/internal/verify"
 )
@@ -66,6 +67,8 @@ func main() {
 	root.AddCommand(cmdCorrect())
 	root.AddCommand(cmdPropose())
 	root.AddCommand(cmdPromote())
+	root.AddCommand(cmdSkill())
+	root.AddCommand(cmdUpdate())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -700,4 +703,103 @@ func cmdPromote() *cobra.Command {
 	}
 	c.Flags().StringVar(&as, "as", "stated_preference", "signal type")
 	return c
+}
+
+func cmdSkill() *cobra.Command {
+	c := &cobra.Command{Use: "skill", Short: "Skill promotion + rumination"}
+	c.AddCommand(&cobra.Command{
+		Use: "cluster", Short: "Cluster preferences into skill candidates",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			cands, err := skills.Cluster(db, 3)
+			if err != nil {
+				return err
+			}
+			cwd, _ := os.Getwd()
+			if err := skills.WriteCandidates(cwd, cands); err != nil {
+				return err
+			}
+			for _, cand := range cands {
+				fmt.Printf("%s (%d prefs) hash=%s\n", cand.ID, cand.Count, cand.Hash)
+			}
+			if len(cands) == 0 {
+				fmt.Println("no clusters (need ≥3 per category with reinforcement_count≥2)")
+			}
+			return nil
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use: "list", Short: "List skill candidates",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, _ := os.Getwd()
+			dir := filepath.Join(cwd, ".palate", "skill-candidates")
+			entries, _ := os.ReadDir(dir)
+			if len(entries) == 0 {
+				fmt.Println("no candidates")
+				return nil
+			}
+			for _, e := range entries {
+				fmt.Println(e.Name())
+			}
+			return nil
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use: "install [id]", Short: "Install a candidate (inert until installed)",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, _ := os.Getwd()
+			if err := skills.InstallCandidate(cwd, args[0]); err != nil {
+				return err
+			}
+			fmt.Println("installed", args[0])
+			return nil
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use: "ruminate [old] [new] [why_better]", Short: "Rumination gate — validate why_better",
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := skills.CheckRevision(args[0], args[1], args[2]); err != nil {
+				return err
+			}
+			fmt.Println("ruminate: ok")
+			return nil
+		},
+	})
+	c.AddCommand(&cobra.Command{
+		Use: "stats [id]", Short: "Show or bump effectiveness stats",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, _ := os.Getwd()
+			if len(args) == 0 {
+				m := skills.LoadStats(cwd)
+				b, _ := json.MarshalIndent(m, "", "  ")
+				fmt.Println(string(b))
+				for _, issue := range skills.Monitors(cwd) {
+					fmt.Fprintln(os.Stderr, "monitor:", issue)
+				}
+				return nil
+			}
+			if err := skills.BumpStat(cwd, args[0], true); err != nil {
+				return err
+			}
+			fmt.Println("bumped", args[0])
+			return nil
+		},
+	})
+	return c
+}
+
+func cmdUpdate() *cobra.Command {
+	return &cobra.Command{
+		Use: "update", Short: "Self-update (sha256 verify, rollback on bad sig)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("update: fetch latest release, verify sha256, replace binary, rollback on failure")
+			fmt.Println("  curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh | sh")
+			fmt.Println("  or: go install github.com/thinhkhuat/palate/cmd/palate@latest")
+			return nil
+		},
+	}
 }

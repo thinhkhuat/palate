@@ -26,12 +26,36 @@ palate sleep
 palate verify capture --pure
 ```
 
+## Adapter matrix
+
+| Harness | Capture capability | Injection path | Install |
+|---------|-------------------|----------------|---------|
+| Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
+| Pi | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
+| OpenClaw | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
+| OpenCode | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
+| Codex/Cursor/Windsurf/OpenWebUI | recall-only | MCP + rules | `palate serve` |
+| Generic MCP | recall-only | stdio/SSE | `palate serve` |
+
+> Honest: Pi/OpenClaw/OpenCode are **recall-only until `docs/adapters/verification.md` TASK-900 passes** — no learning claimed until live hook evidence lands.
+
 ## Docs
 
 - `open-taste-blueprint.md` — master blueprint (source of truth)
 - `docs/decisions.md` — 4 closed decisions
-- `docs/security.md` — stub (Phase 2)
-- `docs/adapters/verification.md` — hook-surface gate (Phase 11 gate)
+- `docs/security.md` — threat model + trust tiers
+- `docs/adapters/verification.md` — hook-surface gate (Phase 11)
+- `docs/architecture.md`, `docs/TASTE-format.md`, `docs/sync.md`, `docs/benchmarking.md`
+
+## Install
+
+```sh
+brew install thinhkhuat/palate/palate
+# or
+curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh | sh
+# or
+go install github.com/thinhkhuat/palate/cmd/palate@latest
+```
 
 ## License
 

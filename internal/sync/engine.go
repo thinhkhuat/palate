@@ -109,3 +109,31 @@ func SortedKeys(m map[string]interface{}) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+func ResolveLWW(a, b Event) Event {
+	if a.Timestamp > b.Timestamp {
+		return a
+	}
+	if b.Timestamp > a.Timestamp {
+		return b
+	}
+	if a.Importance > b.Importance {
+		return a
+	}
+	if b.Importance > a.Importance {
+		return b
+	}
+	if a.DeviceID > b.DeviceID {
+		return a
+	}
+	return b
+}
+
+func OpaqueCursor(timestamp, eventID string) string {
+	payload := struct {
+		Timestamp string `json:"timestamp"`
+		EventID   string `json:"event_id"`
+	}{timestamp, eventID}
+	b, _ := json.Marshal(payload)
+	return string(b)
+}

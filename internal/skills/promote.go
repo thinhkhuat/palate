@@ -3,11 +3,13 @@ package skills
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Candidate struct {
@@ -65,12 +67,17 @@ func renderSkill(category string, stmts []string) string {
 	b.WriteString("---\n")
 	b.WriteString(fmt.Sprintf("name: palate-%s\n", strings.ToLower(strings.ReplaceAll(category, " ", "-"))))
 	b.WriteString(fmt.Sprintf("description: Palate-learned skill for %s (%d preferences)\n", category, len(stmts)))
+	b.WriteString("version: \"0.1.0\"\n")
+	b.WriteString("license: MIT\n")
+	b.WriteString("compatibility: \"agentskills.io\"\n")
 	b.WriteString("---\n\n")
 	b.WriteString(fmt.Sprintf("# %s (Palate)\n\n", category))
 	b.WriteString("Learned from repeated corrections. Review before installing.\n\n")
 	for _, s := range stmts {
 		b.WriteString(fmt.Sprintf("- %s\n", s))
 	}
+	b.WriteString("\n## Effectiveness\n\n")
+	b.WriteString("Track usage: `palate skill stats <id>` increments success/use counts.\n")
 	return b.String()
 }
 
@@ -103,4 +110,54 @@ func InstallCandidate(dir, id string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(destDir, "SKILL.md"), b, 0644)
+}
+
+type Effectiveness struct {
+	SkillID  string `json:"skill_id"`
+	Uses     int    `json:"uses"`
+	Success  int    `json:"success"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func StatsPath(dir string) string { return filepath.Join(dir, ".palate", "skill-stats.json") }
+
+func LoadStats(dir string) map[string]*Effectiveness {
+	m := map[string]*Effectiveness{}
+	b, err := os.ReadFile(StatsPath(dir))
+	if err != nil {
+		return m
+	}
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func BumpStat(dir, skillID string, success bool) error {
+	_ = os.MkdirAll(filepath.Join(dir, ".palate"), 0750)
+	m := LoadStats(dir)
+	e, ok := m[skillID]
+	if !ok {
+		e = &Effectiveness{SkillID: skillID}
+		m[skillID] = e
+	}
+	e.Uses++
+	if success {
+		e.Success++
+	}
+	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return os.WriteFile(StatsPath(dir), b, 0644)
+}
+
+func Monitors(dir string) []string {
+	m := LoadStats(dir)
+	var issues []string
+	for id, e := range m {
+		if e.Uses >= 10 && float64(e.Success)/float64(e.Uses) < 0.3 {
+			issues = append(issues, fmt.Sprintf("%s: rot — success rate %.0f%% over %d uses", id, float64(e.Success)/float64(e.Uses)*100, e.Uses))
+		}
+		if e.Uses == 0 {
+			issues = append(issues, fmt.Sprintf("%s: stale — never used", id))
+		}
+	}
+	return issues
 }

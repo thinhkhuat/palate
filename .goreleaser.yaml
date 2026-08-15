@@ -7,10 +7,18 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
-    ldflags: ["-s -w"]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
 archives:
   - builds: [palate]
     format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: checksums.txt
+brews:
+  - repository:
+      owner: thinhkhuat
+      name: homebrew-palate
+    folder: Formula
+    homepage: "https://github.com/thinhkhuat/palate"
+    description: "Open taste engine — learns style from observable signals"
+    license: "MIT"
