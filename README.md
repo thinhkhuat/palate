@@ -28,16 +28,19 @@ palate verify capture --pure
 
 ## Adapter matrix
 
+> Single source of truth: `docs/adapters.md`. Summary below; details + verification gate there.
+
 | Harness | Capture capability | Injection path | Install |
 |---------|-------------------|----------------|---------|
 | Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
-| Pi | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
-| OpenClaw | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
-| OpenCode | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
-| Codex/Cursor/Windsurf/OpenWebUI | recall-only | MCP + rules | `palate serve` |
+| Command Code | hook-based learning (mirrors Claude Code) | push prewarm | `palate hook install` |
+| OMP (oh-my-pi) | recall-only (hooks unverified) | MCP recall | `palate serve` |
+| Hermes | recall-only (hooks unverified) | MCP recall | `palate serve` |
+| Pi / OpenClaw / OpenCode | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
+| Codex / Cursor / Windsurf / OpenWebUI | recall-only | MCP + rules | `palate serve` |
 | Generic MCP | recall-only | stdio/SSE | `palate serve` |
 
-> Honest: Pi/OpenClaw/OpenCode are **recall-only until `docs/adapters/verification.md` TASK-900 passes** — no learning claimed until live hook evidence lands.
+> Honest: OMP, Hermes, Pi, OpenClaw, OpenCode are **recall-only until `docs/adapters/verification.md` TASK-900 passes** — no learning claimed until live hook evidence lands.
 
 ## Docs
 

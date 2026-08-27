@@ -117,7 +117,13 @@ func cmdDoctor() *cobra.Command {
 			_ = db.QueryRow(`SELECT count(*) FROM fts_working WHERE fts_working MATCH 'test'`).Scan(&fts)
 			fmt.Printf("fts5: ok\n")
 			fmt.Printf("vector: json+cosine (native vec behind build tag)\n")
-			fmt.Printf("adapter: claude_code hooks generatable — run: palate hook install\n")
+			for _, a := range adapters.Registry {
+				status := "recall-only"
+				if a.Verified {
+					status = "learning"
+				}
+				fmt.Printf("adapter: %-16s %-12s — %s\n", a.Name, status, a.Install)
+			}
 			scan := safety.Scan("test content")
 			fmt.Printf("scanner: ok (flagged=%v)\n", scan.Flagged)
 			fmt.Println("doctor: green")

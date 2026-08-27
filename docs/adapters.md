@@ -1,8 +1,13 @@
 # Adapters
 
+> Single source of truth for harness support — README forwards here.
+
 | Harness | Capture capability | Injection path | Install |
 |---------|-------------------|----------------|---------|
 | Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
+| Command Code | hook-based learning (mirrors Claude Code) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
+| OMP (oh-my-pi) | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
+| Hermes | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | Pi | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | OpenClaw | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | OpenCode | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |

@@ -7,6 +7,10 @@
 
 | Harness | Doc URL | Hook / mechanism | Signal mapping | Verdict |
 |---------|---------|------------------|----------------|---------|
+| **Claude Code** | `https://code.claude.com/docs/hooks` | PostToolUse, UserPromptSubmit, Stop, SessionStart, PreCompact | model_edit, user_correction, user_diff, session_start, compaction | **learning** |
+| **Command Code** | `~/.commandcode` (mirrors Claude Code) | PostToolUse, UserPromptSubmit, Stop, SessionStart, PreCompact | same as Claude Code | **learning** (shares Command Code harness; verified via local `settings.json` hooks) |
+| **OMP (oh-my-pi)** | TBD — local CLI `omp` not found; check `pi`/`omp` docs at build | TBD — requires PostToolUse/UserPromptSubmit evidence | TBD | **recall-only (hooks unverified)** |
+| **Hermes** | TBD — local CLI `hermes` not found | TBD | TBD | **recall-only (hooks unverified)** |
 | **Pi** | `https://pi.dev` (verify at build) | TBD — fetch live extension API | `model_edit`? `user_prompt`? `session_start`? | **recall-only (hooks unverified)** |
 | **OpenClaw** | `https://openclaw.dev` (verify at build) | `allowConversationAccess` hook (claimed in blueprint) | TBD | **recall-only (hooks unverified)** |
 | **OpenCode** | `https://opencode.ai` (verify at build) | TBD — fetch live plugin API | TBD | **recall-only (hooks unverified)** |
