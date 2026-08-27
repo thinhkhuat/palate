@@ -6,3 +6,10 @@ dist/
 *.db-wal
 .DS_Store
 /tmp/
+.codexclaw/
+.commandcode/
+.handoff/
+.memsearch/
+TASTE.md
+command-code-session-*.md
+package-lock.json
