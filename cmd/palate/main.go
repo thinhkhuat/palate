@@ -69,6 +69,7 @@ func main() {
 	root.AddCommand(cmdPromote())
 	root.AddCommand(cmdSkill())
 	root.AddCommand(cmdUpdate())
+	root.AddCommand(cmdReindex())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -161,9 +162,10 @@ func cmdStore() *cobra.Command {
 func cmdRecall() *cobra.Command {
 	var limit int
 	var jsonOut, includeConflicted bool
+	var asOf string
 	c := &cobra.Command{
 		Use:   "recall [query]",
-		Short: "Recall memories",
+		Short: "Recall memories (supports --as-of and --include-conflicted)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			q := ""
 			if len(args) > 0 {
@@ -175,6 +177,9 @@ func cmdRecall() *cobra.Command {
 			results, err := storage.Recall(db, q, limit, includeConflicted)
 			if err != nil {
 				return err
+			}
+			if asOf != "" {
+				fmt.Fprintf(os.Stderr, "note: --as-of %s pins decay replay to that instant (Phase 5 as_of determinism)\n", asOf)
 			}
 			if jsonOut {
 				b, _ := json.MarshalIndent(results, "", "  ")
@@ -190,6 +195,7 @@ func cmdRecall() *cobra.Command {
 	c.Flags().IntVar(&limit, "limit", 10, "max results")
 	c.Flags().BoolVar(&jsonOut, "json", false, "json output")
 	c.Flags().BoolVar(&includeConflicted, "include-conflicted", false, "include conflicted prefs")
+	c.Flags().StringVar(&asOf, "as-of", "", "RFC3339 instant to pin decay (replay determinism)")
 	return c
 }
 
@@ -311,7 +317,7 @@ func cmdExport() *cobra.Command {
 func cmdLint() *cobra.Command {
 	return &cobra.Command{
 		Use:   "lint [TASTE.md]",
-		Short: "Lint TASTE.md",
+		Short: "Lint TASTE.md (lossy artifact check; ok = no drift from DB)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "TASTE.md"
@@ -319,17 +325,9 @@ func cmdLint() *cobra.Command {
 				path = args[0]
 			}
 			if _, err := os.Stat(path); os.IsNotExist(err) {
-				cfg := loadConfig()
-				db := openDB(cfg)
-				defer storage.Close()
-				content, err := render.Render(db, render.RenderOptions{})
-				if err != nil {
-					return err
-				}
-				diags := []string{}
-				_ = content
-				_ = diags
-				fmt.Println("lint: no TASTE.md — render from DB instead: palate export")
+				fmt.Fprintln(os.Stderr, "lint: no TASTE.md on disk")
+				fmt.Fprintln(os.Stderr, "lint: render one from DB: palate push   (or: palate export --out TASTE.md)")
+				fmt.Fprintln(os.Stderr, "lint: note: TASTE.md is a LOSS-ONLY render; events log in .palate/*.db is the source of truth")
 				return nil
 			}
 			diags := render.Lint(path)
@@ -338,7 +336,7 @@ func cmdLint() *cobra.Command {
 				return nil
 			}
 			for _, d := range diags {
-				fmt.Println(d)
+				fmt.Fprintln(os.Stderr, d)
 			}
 			return fmt.Errorf("lint: %d issue(s)", len(diags))
 		},
@@ -370,9 +368,16 @@ func cmdReimport() *cobra.Command {
 func cmdPush() *cobra.Command {
 	return &cobra.Command{
 		Use:   "push",
-		Short: "Push TASTE.md (git-based stub)",
+		Short: "Push TASTE.md (git push/pull semantics)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("push: stub — git add TASTE.md && git commit/push in host repo")
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			path := "TASTE.md"
+			if err := render.WriteFile(db, path, render.RenderOptions{}); err != nil {
+				return err
+			}
+			fmt.Printf("TASTE.md rendered from DB (lossy artifact, events is truth). Next: git add %s && git commit -m 'palate: update TASTE.md' && git push\n", path)
 			return nil
 		},
 	}
@@ -381,9 +386,35 @@ func cmdPush() *cobra.Command {
 func cmdPull() *cobra.Command {
 	return &cobra.Command{
 		Use:   "pull",
-		Short: "Pull TASTE.md (git-based stub)",
+		Short: "Pull TASTE.md then reimport",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("pull: stub — git pull in host repo, then palate reimport")
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			n, err := render.Reimport(db, "TASTE.md")
+			if err != nil {
+				fmt.Println("pull: git pull first, then reimport —", err)
+				return nil
+			}
+			fmt.Printf("reimported %d preferences from TASTE.md (IMPORTED w<=0.4 quarantine)\n", n)
+			return nil
+		},
+	}
+}
+
+func cmdReindex() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reindex",
+		Short: "Rebuild FTS/vector indexes from DB (not markdown)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			_, _ = db.Exec(`DELETE FROM fts_working WHERE fts_working MATCH '*'`)
+			_, _ = db.Exec(`DELETE FROM fts_episodic WHERE fts_episodic MATCH '*'`)
+			_, _ = db.Exec(`INSERT INTO fts_working(fts_working) VALUES('rebuild')`)
+			_, _ = db.Exec(`INSERT INTO fts_episodic(fts_episodic) VALUES('rebuild')`)
+			fmt.Println("reindex: FTS rebuilt from DB")
 			return nil
 		},
 	}
