@@ -1,65 +1,132 @@
 # Palate — Open Taste Engine
 
-Open, local-first taste engine — learns your coding style from observable signals and injects it into AI harnesses via push prewarm.
+> **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-- **Single Go binary**, no CGO, SQLite-only (FTS5 + JSON+cosine; `sqlite-vec` behind a build tag).
-- **Observable signals only**: `model_edit`, `user_correction`, `user_diff`, `stated_preference`, explicit tools.
-- **Push prewarm** (SessionStart ~500 tok + UserPromptSubmit ~200 tok goal-scoped) + on-demand `recall`.
-- **Human-readable `TASTE.md`** — lossy render artifact; `events` log is truth.
+[![Status](https://img.shields.io/badge/status-v0.1.0-blue)](#)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
+[![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
 
-> MVP: Phases 1–8, Claude Code only. Post-MVP: skill promotion, sync/E2EE, remaining adapters.
+---
 
-## Quickstart
+## Why Palate
+
+Harness-native "taste" (like Command Code's closed one) works because the harness *is* the learner — it sees every accept/reject. A portable taste engine can't. **Palate's trick is to learn only from what any harness can actually observe** — your edits, your diffs, your explicit `prefer`/`correct` — score each preference with a confidence that decays and reinforces over time, and *push* it back via a prewarm block so the agent doesn't have to remember to ask.
+
+- **Single Go binary. No CGO. SQLite-only.** `modernc.org/sqlite` + FTS5 + JSON+cosine (and `sqlite-vec` behind a build tag when you want it).
+- **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept` — no invented `accept/reject` primitive.
+- **Push prewarm:** SessionStart ~500 tok once per session + UserPromptSubmit ~200 tok only when your *intent* changes. Honest budgets, disclosed.
+- **TASTE.md is a render, not the truth.** The `events` log in `.palate/*.db` is the source of truth; `TASTE.md` is a reviewable, git-shareable artifact.
+
+---
+
+## 30-second start
 
 ```sh
+brew install thinhkhuat/palate/palate   # or: go install github.com/thinhkhuat/palate/cmd/palate@latest
 palate init
-palate doctor          # green?
-palate hook install    # wire Claude Code hooks
-palate serve           # MCP stdio (for generic clients)
-```
+palate doctor                          # → green? (sqlite, fts5, vector, 12 adapters, scanner)
+palate hook install                    # Claude Code + Command Code — one command
 
-```sh
 palate prefer "use table-driven tests"
 palate recall "testing" --json
 palate prewarm
-palate sleep
 palate verify capture --pure
 ```
 
-## Adapter matrix
+Detailed install for every harness: **[INSTALL.md](INSTALL.md)**
 
-> Single source of truth: `docs/adapters.md`. Summary below; details + verification gate there.
+---
 
-| Harness | Capture capability | Injection path | Install |
-|---------|-------------------|----------------|---------|
-| Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
-| Command Code | hook-based learning (mirrors Claude Code) | push prewarm | `palate hook install` |
-| OMP (oh-my-pi) | recall-only (hooks unverified) | MCP recall | `palate serve` |
-| Hermes | recall-only (hooks unverified) | MCP recall | `palate serve` |
-| Pi / OpenClaw / OpenCode | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
-| Codex / Cursor / Windsurf / OpenWebUI | recall-only | MCP + rules | `palate serve` |
-| Generic MCP | recall-only | stdio/SSE | `palate serve` |
+## Harnesses — honest support
 
-> Honest: OMP, Hermes, Pi, OpenClaw, OpenCode are **recall-only until `docs/adapters/verification.md` TASK-900 passes** — no learning claimed until live hook evidence lands.
+**Source of truth:** [`docs/adapters.md`](docs/adapters.md) · **Verification gate:** [`docs/adapters/verification.md`](docs/adapters/verification.md) (TASK-900 — no learning claim without live hook evidence)
+
+| Harness | What you get | How |
+|---------|-------------|-----|
+| **Claude Code** | **Learning** — hook-based (`PostToolUse` / `UserPromptSubmit` / `Stop` / `SessionStart` + `PreCompact`) | `palate hook install` |
+| **Command Code** | **Learning** — mirrors Claude Code via `~/.commandcode` | `palate hook install` |
+| **OMP (oh-my-pi)** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
+| **Hermes** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
+| **Pi / OpenClaw / OpenCode** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
+| **Codex / Cursor / Windsurf / OpenWebUI** | Recall-only | `palate serve` (MCP) |
+| **Generic MCP** | Recall-only | `palate serve` (stdio / `--port` SSE) |
+
+> Beyond Claude Code / Command Code, every adapter is **recall-only until its hooks are proven**. Palate never overclaims.
+
+Per-harness wiring (human + agent copy-paste): [`INSTALL.md`](INSTALL.md) §2
+
+---
+
+## How it works
+
+```
+Observable signal → safety gate (secret + injection scan) → confidence update → store
+                                                                      ↓
+                                              push prewarm (session / intent) ←→ recall / TASTE.md
+```
+
+**Confidence math:** `decay(c, c_floor, half_life=168h, Δt) → reinforce/ weaken (w·0.3) → clamp [c_floor,1.0]`, bump `last_reinforced_at` + `reinforcement_count`. New preference seeds at `max(c_floor, w·0.5)`. Tie-break: `confidence → reinforcement_count → last_reinforced_at`. Every mutation is append-only in `events` — replay is deterministic when pinned to an `as_of` instant.
+
+**Storage:** BEAM-like tiers `working → episodic → scratchpad`, FTS5 (`UPDATE OF content` only), `preferences` + `conflicts` bi-temporal, `capture_counters`, hybrid `FTS + importance × recency_decay` (full `0.5/0.3/0.2` gated behind the `sqlite-vec` build).
+
+**Skills (Phase 9):** Corrections with `reinforcement_count ≥2` cluster by category; ≥3 → deterministic `SKILL.md` (`agentskills.io` frontmatter) via `palate skill cluster`. Candidates are inert until `palate skill install`. Rumination gate rejects cosmetic edits and demands `why_better ≥40` + a testable prediction.
+
+**Sync (Phase 10):** Append-only `events` with `EventHash`, cursor `WHERE (created_at, id) > (?,?)`, `ResolveLWW(timestamp, importance, device_id)`, `OpaqueCursor`, and optional E2EE (`Argon2id → AES-GCM`, key never leaves the machine — server sees metadata only). Leases, reclaim, oracles all stay out.
+
+See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](docs/TASTE-format.md), [`docs/sync.md`](docs/sync.md).
+
+---
+
+## CLI — the surface you'll actually use
+
+| Command | What it does |
+|---------|-------------|
+| `palate init` | Create `.palate/palate.db` (0700/0600, WAL) |
+| `palate doctor` | Green check over sqlite, fts5, vector, 12 adapters, scanner |
+| `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted` |
+| `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct`) |
+| `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
+| `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent) |
+| `palate lint / push / pull / reindex` | `TASTE.md` is lossy; `reindex` rebuilds FTS from DB |
+| `palate skill {cluster,list,install,ruminate,stats}` | Promotion + rumination |
+| `palate verify {capture,retrieval} --pure` | Blinded scenarios, `n` + `hash` + caveats (never a headline without them) |
+| `palate hook install` | Wire Claude Code + Command Code hooks (idempotent) |
+| `palate serve [--port]` | MCP stdio/SSE — `PALATE_MCP_TOKEN` + loopback allowlist on SSE |
+
+Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust tiers) + env overrides (`PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_MCP_TOKEN`).
+
+---
+
+## Security
+
+- Every write boundary censors secrets (`sk-`, `ghp_`, `PRIVATE KEY`, `AKIA`) and scans for injections (instruction-override, role-spoof, zero-width) — `trust_tier=IMPORTED` + `[PALATE: FLAGGED]` banner, quarantined until `palate promote`.
+- MCP: `PALATE_MCP_TOKEN` + `hmac.compare_digest` + allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` without a token.
+- Reimport quarantine: `TASTE.md → IMPORTED w≤0.4`.
+- Untrusted memory is always wrapped in `<UNTRUSTED_CONTENT>` before injection.
+
+Details: [`docs/security.md`](docs/security.md)
+
+---
 
 ## Docs
 
-- `open-taste-blueprint.md` — master blueprint (source of truth)
-- `docs/decisions.md` — 4 closed decisions
-- `docs/security.md` — threat model + trust tiers
-- `docs/adapters/verification.md` — hook-surface gate (Phase 11)
-- `docs/architecture.md`, `docs/TASTE-format.md`, `docs/sync.md`, `docs/benchmarking.md`
+- **Install for every harness (human + agent):** [`INSTALL.md`](INSTALL.md)
+- **Adapters — the single source:** [`docs/adapters.md`](docs/adapters.md)
+- **Verification gate (honest row per harness):** [`docs/adapters/verification.md`](docs/adapters/verification.md)
+- **Architecture / TASTE format / Sync / Benchmarking:** [`docs/architecture.md`](docs/architecture.md) · [`docs/TASTE-format.md`](docs/TASTE-format.md) · [`docs/sync.md`](docs/sync.md) · [`docs/benchmarking.md`](docs/benchmarking.md)
+- **Blueprint (source of truth):** [`open-taste-blueprint.md`](open-taste-blueprint.md) v2.1 · **Decisions:** [`docs/decisions.md`](docs/decisions.md) · **Plan:** [`plans/260815-1906-palate-v21-open-taste-engine/plan.md`](plans/260815-1906-palate-v21-open-taste-engine/plan.md) (13/13, 133/133)
 
-## Install
+---
+
+## Development
 
 ```sh
-brew install thinhkhuat/palate/palate
-# or
-curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh | sh
-# or
-go install github.com/thinhkhuat/palate/cmd/palate@latest
+go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
+
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.1.0` is actually published, use `brew install --HEAD` or `go install`.
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE)
