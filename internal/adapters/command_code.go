@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -39,10 +38,12 @@ func WriteCommandCodeHooks(dir, binaryPath string) error {
 	}
 	var parsed map[string]interface{}
 	_ = json.Unmarshal(b, &parsed)
-	for k, v := range parsed {
-		existing[k] = v
-	}
+	mergeTopLevelHooks(existing, parsed)
 	out, _ := json.MarshalIndent(existing, "", "  ")
-	_ = fmt.Sprintf("%v", out)
-	return os.WriteFile(path, out, 0644)
+	return os.WriteFile(path, append(out, '\n'), 0644)
+}
+
+// RemoveCommandCodeHooks removes palate entries from <dir>/.commandcode/settings.local.json.
+func RemoveCommandCodeHooks(dir string) (int, error) {
+	return removePalateHooksTopLevel(filepath.Join(dir, ".commandcode", "settings.local.json"))
 }

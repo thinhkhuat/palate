@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/thinhkhuat/palate/internal/adapters"
@@ -117,6 +120,7 @@ func cmdDoctor() *cobra.Command {
 			_ = db.QueryRow(`SELECT count(*) FROM fts_working WHERE fts_working MATCH 'test'`).Scan(&fts)
 			fmt.Printf("fts5: ok\n")
 			fmt.Printf("vector: json+cosine (native vec behind build tag)\n")
+			fmt.Printf("adapters: %d (%d verified for learning)\n", len(adapters.Registry), countVerified(adapters.Registry))
 			for _, a := range adapters.Registry {
 				status := "recall-only"
 				if a.Verified {
@@ -180,12 +184,30 @@ func cmdRecall() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			results, err := storage.Recall(db, q, limit, includeConflicted)
+			var asOfTime *time.Time
+			if asOf != "" {
+				t, err := time.Parse(time.RFC3339, asOf)
+				if err != nil {
+					return fmt.Errorf("bad --as-of %q: want RFC3339 (e.g. 2026-09-01T00:00:00Z): %w", asOf, err)
+				}
+				asOfTime = &t
+				fmt.Fprintf(os.Stderr, "note: --as-of %s pins decay replay to that instant (Phase 5 as_of determinism)\n", asOf)
+			}
+			results, err := storage.RecallFull(db, q, limit, includeConflicted, asOfTime, storage.RecallOptions{
+				CFloor:        cfg.CFloor,
+				HalfLifeHours: cfg.HalfLifeHours,
+				Freshness: storage.FreshnessWeights{
+					Enabled:  cfg.Freshness.Enabled,
+					T1Days:   cfg.Freshness.T1Days,
+					T1Weight: cfg.Freshness.T1Weight,
+					T2Days:   cfg.Freshness.T2Days,
+					T2Weight: cfg.Freshness.T2Weight,
+					T3Weight: cfg.Freshness.T3Weight,
+				},
+				RRFK: cfg.Hybrid.RRFK,
+			})
 			if err != nil {
 				return err
-			}
-			if asOf != "" {
-				fmt.Fprintf(os.Stderr, "note: --as-of %s pins decay replay to that instant (Phase 5 as_of determinism)\n", asOf)
 			}
 			if jsonOut {
 				b, _ := json.MarshalIndent(results, "", "  ")
@@ -206,7 +228,7 @@ func cmdRecall() *cobra.Command {
 }
 
 func cmdPrewarm() *cobra.Command {
-	var scope string
+	var scope, prompt string
 	c := &cobra.Command{
 		Use:   "prewarm",
 		Short: "Emit prewarm block",
@@ -214,16 +236,30 @@ func cmdPrewarm() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
+			if scope == "goal" {
+				if prompt == "" {
+					return fmt.Errorf("prewarm --scope goal requires --prompt")
+				}
+				block, fired, err := prewarm.GoalPrewarm(db, cfg, prompt)
+				if err != nil {
+					return err
+				}
+				if !fired {
+					return nil
+				}
+				fmt.Print(block.Content)
+				return nil
+			}
 			block, err := prewarm.SessionPrewarm(db, cfg)
 			if err != nil {
 				return err
 			}
-			_ = scope
 			fmt.Print(block.Content)
 			return nil
 		},
 	}
 	c.Flags().StringVar(&scope, "scope", "session", "session|goal")
+	c.Flags().StringVar(&prompt, "prompt", "", "user prompt (required with --scope goal)")
 	return c
 }
 
@@ -465,19 +501,163 @@ func cmdVerify() *cobra.Command {
 
 func cmdHook() *cobra.Command {
 	c := &cobra.Command{Use: "hook", Short: "Hook handlers (called by harness)"}
-	c.AddCommand(&cobra.Command{
+
+	var installHarnesses []string
+	install := &cobra.Command{
 		Use:   "install",
-		Short: "Install Claude Code hooks into .claude/settings.local.json",
+		Short: "Install palate hooks (Claude Code, Command Code, ZCode)",
+		Long: "Writes palate hook entries into harness settings, idempotently.\n" +
+			"Targets: claude_code (.claude/settings.local.json), command_code (.commandcode/settings.local.json),\n" +
+			"zcode (.zcode/config.json, workspace) and zcode-global (~/.zcode/cli/config.json).\n" +
+			"Default with no --harness: claude_code, command_code, zcode.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, _ := os.Getwd()
-			bin, _ := os.Executable()
-			if bin == "" {
-				bin = "palate"
-			}
-			if err := adapters.WriteClaudeCodeHooks(cwd, bin); err != nil {
+			bin := hookBinaryPath()
+			want, err := parseHarnessList(installHarnesses)
+			if err != nil {
 				return err
 			}
-			fmt.Println("hooks installed")
+			var installed []string
+			for _, h := range []string{"claude_code", "command_code", "zcode", "zcode-global"} {
+				if !want[h] {
+					continue
+				}
+				switch h {
+				case "claude_code":
+					err = adapters.WriteClaudeCodeHooks(cwd, bin)
+				case "command_code":
+					err = adapters.WriteCommandCodeHooks(cwd, bin)
+				case "zcode":
+					err = adapters.WriteZCodeHooks(cwd, bin)
+				case "zcode-global":
+					err = adapters.WriteZCodeHooksGlobal(bin)
+				}
+				if err != nil {
+					return fmt.Errorf("%s: %w", h, err)
+				}
+				installed = append(installed, h)
+			}
+			fmt.Printf("hooks installed: %s\n", strings.Join(installed, ", "))
+			fmt.Println("restart the harness so it picks up the hooks")
+			return nil
+		},
+	}
+	install.Flags().StringSliceVar(&installHarnesses, "harness", nil,
+		"claude_code|command_code|zcode|zcode-global (comma-separated; default: claude_code,command_code,zcode)")
+	c.AddCommand(install)
+
+	var uninstallHarnesses []string
+	uninstall := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove palate hooks from harness settings (foreign hooks preserved)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, _ := os.Getwd()
+			want, err := parseHarnessList(uninstallHarnesses)
+			if err != nil {
+				return err
+			}
+			for _, h := range []string{"claude_code", "command_code", "zcode", "zcode-global"} {
+				if !want[h] {
+					continue
+				}
+				var n int
+				switch h {
+				case "claude_code":
+					n, err = adapters.RemoveClaudeCodeHooks(cwd)
+				case "command_code":
+					n, err = adapters.RemoveCommandCodeHooks(cwd)
+				case "zcode":
+					n, err = adapters.RemoveZCodeHooksAt(adapters.ZCodeWorkspaceConfigPath(cwd))
+				case "zcode-global":
+					var p string
+					if p, err = adapters.ZCodeGlobalConfigPath(); err == nil {
+						n, err = adapters.RemoveZCodeHooksAt(p)
+					}
+				}
+				if err != nil {
+					return fmt.Errorf("%s: %w", h, err)
+				}
+				fmt.Printf("%s: removed %d palate hook entr%s\n", h, n, plural(n))
+				if h == "zcode" || h == "zcode-global" {
+					var p string
+					if h == "zcode" {
+						p = adapters.ZCodeWorkspaceConfigPath(cwd)
+					} else if p, _ = adapters.ZCodeGlobalConfigPath(); p == "" {
+						continue
+					}
+					if adapters.ZCodeEnabledWithForeignHooks(p) {
+						fmt.Printf("%s: note: hooks.enabled left true — foreign hooks remain in %s; unset it yourself if you want config hooks off\n", h, p)
+					}
+				}
+			}
+			return nil
+		},
+	}
+	uninstall.Flags().StringSliceVar(&uninstallHarnesses, "harness", nil,
+		"claude_code|command_code|zcode|zcode-global (default: all)")
+	c.AddCommand(uninstall)
+
+	c.AddCommand(&cobra.Command{
+		Use:    "help",
+		Aliases: []string{"list", "status"},
+		Short:  "Show palate hook wiring status per harness",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, _ := os.Getwd()
+			type row struct {
+				name  string
+				path  string
+				count int
+			}
+			rows := []row{
+				{"claude_code", filepath.Join(cwd, ".claude", "settings.local.json"), 0},
+				{"command_code", filepath.Join(cwd, ".commandcode", "settings.local.json"), 0},
+			}
+			for i := range rows {
+				rows[i].count = adapters.CountPalateHooksTopLevel(rows[i].path)
+			}
+			zc := row{"zcode", adapters.ZCodeWorkspaceConfigPath(cwd), 0}
+			zc.count = adapters.CountPalateHooksZCode(zc.path)
+			rows = append(rows, zc)
+			if globalPath, err := adapters.ZCodeGlobalConfigPath(); err == nil {
+				rows = append(rows, row{"zcode-global", globalPath, adapters.CountPalateHooksZCode(globalPath)})
+			}
+			for _, r := range rows {
+				status := "not installed"
+				if r.count > 0 {
+					status = fmt.Sprintf("%d entries — learning wired", r.count)
+				}
+				fmt.Printf("%-14s %-32s %s\n", r.name+":", status, r.path)
+			}
+			return nil
+		},
+	})
+
+	c.AddCommand(&cobra.Command{
+		Use:   "session-start",
+		Short: "SessionStart handler (JSON additionalContext + cross-session user_diff)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Best-effort by contract: a capture hook must never break the
+			// session, so errors degrade to empty output (exit 0).
+			_, _ = io.ReadAll(os.Stdin)
+			cfg := loadConfig()
+			db, err := storage.Open(cfg.DBPath)
+			if err != nil {
+				return nil
+			}
+			defer storage.Close()
+			handleStateWalkUserDiffs(db, cfg)
+			block, err := prewarm.SessionPrewarm(db, cfg)
+			if err != nil || block.Content == "" {
+				return nil
+			}
+			out := map[string]interface{}{
+				"hookSpecificOutput": map[string]interface{}{
+					"hookEventName":    "SessionStart",
+					"additionalContext": block.Content,
+				},
+			}
+			b, _ := json.Marshal(out)
+			fmt.Println(string(b))
 			return nil
 		},
 	})
@@ -492,27 +672,21 @@ func cmdHook() *cobra.Command {
 				Prompt string `json:"prompt"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
-			if learn.IsCorrectionShaped(input.Prompt) {
-				if stmt, cat := learn.ExtractStatedPreference(input.Prompt); stmt != "" {
-					_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
-				}
+			if stmt, cat := learn.ExtractStatedPreference(input.Prompt); stmt != "" {
+				_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
 			}
-			prompt := input.Prompt
-			if prompt == "" {
-				b, _ := os.ReadFile(filepath.Join(".palate", "last_prompt"))
-				prompt = string(b)
+			if input.Prompt == "" {
+				return nil
 			}
-			if prompt != "" {
-				if block, fired, _ := prewarm.GoalPrewarm(db, cfg, prompt); fired {
-					out := map[string]interface{}{
-						"hookSpecificOutput": map[string]interface{}{
-							"hookEventName":   "UserPromptSubmit",
-							"additionalContext": block.Content,
-						},
-					}
-					b, _ := json.Marshal(out)
-					fmt.Println(string(b))
+			if block, fired, _ := prewarm.GoalPrewarm(db, cfg, input.Prompt); fired {
+				out := map[string]interface{}{
+					"hookSpecificOutput": map[string]interface{}{
+						"hookEventName":    "UserPromptSubmit",
+						"additionalContext": block.Content,
+					},
 				}
+				b, _ := json.Marshal(out)
+				fmt.Println(string(b))
 			}
 			return nil
 		},
@@ -521,24 +695,16 @@ func cmdHook() *cobra.Command {
 		Use:   "post-tool-use",
 		Short: "PostToolUse handler (records model_edit file→hash)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var input struct {
-				ToolName string `json:"tool_name"`
-				ToolInput struct {
-					FilePath string `json:"file_path"`
-				} `json:"tool_input"`
-				ToolResponse struct {
-					FilePath string `json:"filePath"`
-				} `json:"tool_response"`
+			raw, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return nil
 			}
-			_ = json.NewDecoder(os.Stdin).Decode(&input)
-			fp := input.ToolInput.FilePath
-			if fp == "" {
-				fp = input.ToolResponse.FilePath
+			var v map[string]interface{}
+			if json.Unmarshal(raw, &v) != nil {
+				return nil
 			}
+			fp := hookFilePath(v)
 			if fp == "" {
-				var raw map[string]interface{}
-				_ = json.NewDecoder(os.Stdin).Decode(&raw)
-				_ = raw
 				return nil
 			}
 			b, err := os.ReadFile(fp)
@@ -548,13 +714,15 @@ func cmdHook() *cobra.Command {
 			h := fileHash(b)
 			statePath := filepath.Join(".palate", "model_edits.json")
 			_ = os.MkdirAll(".palate", 0700)
-			m := map[string]string{}
-			if data, err := os.ReadFile(statePath); err == nil {
-				_ = json.Unmarshal(data, &m)
+			state := loadModelEdits(statePath)
+			snap := b
+			if len(snap) > 4096 {
+				snap = snap[:4096]
 			}
-			m[fp] = h
-			data, _ := json.Marshal(m)
-			_ = os.WriteFile(statePath, data, 0600)
+			state[fp] = modelEdit{Hash: h, Snapshot: string(snap)}
+			if err := saveModelEdits(statePath, state); err != nil {
+				return nil
+			}
 			return nil
 		},
 	})
@@ -574,46 +742,33 @@ func cmdHook() *cobra.Command {
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
 			statePath := filepath.Join(".palate", "model_edits.json")
-			modelEdits := map[string]string{}
-			if b, err := os.ReadFile(statePath); err == nil {
-				_ = json.Unmarshal(b, &modelEdits)
-			}
-			for _, f := range input.Files {
-				if f.Path == "" {
-					continue
+			modelEdits := loadModelEdits(statePath)
+			if len(input.Files) > 0 {
+				// Explicit files[] payload (scripted callers).
+				for _, f := range input.Files {
+					if f.Path == "" {
+						continue
+					}
+					rec, hasModelEdit := modelEdits[f.Path]
+					if !hasModelEdit {
+						storage.BumpDrop(db, "user_diff")
+						continue
+					}
+					if applyUserDiffSignal(db, cfg, f.Path, rec.Hash, rec.Snapshot, f.HashAfter) {
+						delete(modelEdits, f.Path)
+					}
 				}
-				hashAfter, hasModelEdit := modelEdits[f.Path]
-				if !hasModelEdit {
-					storage.BumpDrop(db, "user_diff")
-					continue
-				}
-				if f.HashAfter != "" {
-					hashAfter = f.HashAfter
-				}
-				b, err := os.ReadFile(f.Path)
-				if err != nil {
-					storage.BumpDrop(db, "user_diff")
-					continue
-				}
-				currentHash := fileHash(b)
-				if currentHash == hashAfter {
-					storage.BumpDrop(db, "user_diff")
-					continue
-				}
-				stmt := fmt.Sprintf("prefers change in %s", filepath.Base(f.Path))
-				scan := safety.Scan(stmt)
-				if scan.Flagged && scan.Reason == "secret" {
-					storage.BumpDrop(db, "user_diff")
-					continue
-				}
-				_, err = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalUserDiff, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt), File: f.Path}, nil)
-				if err == nil {
-					storage.BumpHit(db, "user_diff")
-				} else {
-					storage.BumpDrop(db, "user_diff")
+			} else {
+				// No files[] in the hook payload (what live harnesses send):
+				// diff recorded model edits against disk. Entries whose disk
+				// hash still matches stay in state for later checks.
+				for fp, rec := range modelEdits {
+					if applyUserDiffSignal(db, cfg, fp, rec.Hash, rec.Snapshot, "") {
+						delete(modelEdits, fp)
+					}
 				}
 			}
-			_ = os.Remove(statePath)
+			_ = saveModelEdits(statePath, modelEdits)
 			return nil
 		},
 	})
@@ -634,9 +789,175 @@ func cmdHook() *cobra.Command {
 	return c
 }
 
+func parseHarnessList(list []string) (map[string]bool, error) {
+	want := map[string]bool{}
+	if len(list) == 0 {
+		for _, h := range []string{"claude_code", "command_code", "zcode"} {
+			want[h] = true
+		}
+		return want, nil
+	}
+	valid := map[string]bool{"claude_code": true, "command_code": true, "zcode": true, "zcode-global": true}
+	for _, item := range list {
+		for _, h := range strings.Split(item, ",") {
+			h = strings.TrimSpace(h)
+			if !valid[h] {
+				return nil, fmt.Errorf("unknown harness %q (valid: claude_code, command_code, zcode, zcode-global)", h)
+			}
+			want[h] = true
+		}
+	}
+	return want, nil
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+// hookBinaryPath resolves the palate binary for hook commands. Temporary
+// build paths (go run) go stale, so they degrade to a PATH lookup.
+func hookBinaryPath() string {
+	bin, err := os.Executable()
+	if err != nil || bin == "" {
+		return "palate"
+	}
+	if strings.Contains(bin, "go-build") {
+		fmt.Fprintf(os.Stderr, "hook install: %s is a temporary go-build path; using \"palate\" from PATH\n", bin)
+		return "palate"
+	}
+	abs, err := filepath.Abs(bin)
+	if err != nil {
+		return bin
+	}
+	return abs
+}
+
+// hookFilePath extracts the edited file path from a PostToolUse payload,
+// tolerating the field-name variants across harness generations
+// (tool_input.file_path / path, tool_response.file_path / filePath / path).
+func hookFilePath(v map[string]interface{}) string {
+	pick := func(m map[string]interface{}, keys ...string) string {
+		for _, k := range keys {
+			if s, ok := m[k].(string); ok && s != "" {
+				return s
+			}
+		}
+		return ""
+	}
+	for _, section := range []string{"tool_input", "tool_response"} {
+		if m, ok := v[section].(map[string]interface{}); ok {
+			if fp := pick(m, "file_path", "filePath", "path"); fp != "" {
+				return fp
+			}
+		}
+	}
+	return ""
+}
+
+// modelEdit is one tracked file: the hash at model-edit time plus a
+// bounded content snapshot so the Stop handler can learn WHAT changed,
+// not just that the file changed.
+type modelEdit struct {
+	Hash     string `json:"hash"`
+	Snapshot string `json:"snapshot,omitempty"`
+}
+
+func loadModelEdits(path string) map[string]modelEdit {
+	state := map[string]modelEdit{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return state
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		// Legacy shape: path -> hash string.
+		legacy := map[string]string{}
+		if jerr := json.Unmarshal(data, &legacy); jerr != nil {
+			return state
+		}
+		for fp, h := range legacy {
+			state[fp] = modelEdit{Hash: h}
+		}
+	}
+	return state
+}
+
+func saveModelEdits(path string, state map[string]modelEdit) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// applyUserDiffSignal compares the file on disk against the hash recorded at
+// model-edit time. hashAfterOverride (files[] payload) replaces the baseline
+// when non-empty. Returns true when the entry is handled (signal emitted or
+// file gone) and should be removed from state; an unchanged file returns
+// false and stays in state for later checks.
+func applyUserDiffSignal(db *sql.DB, cfg config.Config, path, recordedHash, snapshot, hashAfterOverride string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		storage.BumpDrop(db, "user_diff")
+		return true
+	}
+	baseline := recordedHash
+	if hashAfterOverride != "" {
+		baseline = hashAfterOverride
+	}
+	if fileHash(b) == baseline {
+		return false
+	}
+	for _, sig := range learn.ExtractCandidates(snapshot, string(b)) {
+		sig.File = path
+		scan := safety.Scan(sig.Statement)
+		if scan.Flagged && scan.Reason == "secret" {
+			storage.BumpDrop(db, "user_diff")
+			return true
+		}
+		if _, err := learn.ApplySignal(db, cfg, sig, nil); err != nil {
+			storage.BumpDrop(db, "user_diff")
+			return true
+		}
+		storage.BumpHit(db, "user_diff")
+		return true
+	}
+	storage.BumpDrop(db, "user_diff")
+	return true
+}
+
+// handleStateWalkUserDiffs runs the model_edits state walk at session start,
+// catching edits the user made between sessions.
+func handleStateWalkUserDiffs(db *sql.DB, cfg config.Config) {
+	statePath := filepath.Join(".palate", "model_edits.json")
+	modelEdits := loadModelEdits(statePath)
+	changed := false
+	for fp, rec := range modelEdits {
+		if applyUserDiffSignal(db, cfg, fp, rec.Hash, rec.Snapshot, "") {
+			delete(modelEdits, fp)
+			changed = true
+		}
+	}
+	if changed {
+		_ = saveModelEdits(statePath, modelEdits)
+	}
+}
+
 func fileHash(b []byte) string {
 	h := sha256.Sum256(b)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+func countVerified(registry []adapters.Adapter) int {
+	n := 0
+	for _, a := range registry {
+		if a.Verified {
+			n++
+		}
+	}
+	return n
 }
 
 func cmdPrefer() *cobra.Command {
@@ -727,7 +1048,7 @@ func cmdPromote() *cobra.Command {
 			if as == "" {
 				as = "stated_preference"
 			}
-			_, err := learn.PromoteProposalWithApply(db, args[0], as, cfg, func(sig learn.Signal) error {
+			_, err := learn.PromoteProposal(db, args[0], as, cfg, func(sig learn.Signal) error {
 				_, err := learn.ApplySignal(db, cfg, sig, nil)
 				return err
 			})

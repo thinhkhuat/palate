@@ -1,4 +1,6 @@
 .palate/
+.unlazy/
+.unlazy-hook-state.json
 dist/
 /palate
 *.db

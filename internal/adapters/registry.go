@@ -11,6 +11,7 @@ type Adapter struct {
 var Registry = []Adapter{
 	{Name: "Claude Code", Capture: "hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart)", Injection: "push prewarm (SessionStart + UserPromptSubmit additionalContext)", Install: "palate hook install", Verified: true},
 	{Name: "Command Code", Capture: "hook-based learning (mirrors Claude Code: PostToolUse/UserPromptSubmit/Stop/SessionStart)", Injection: "push prewarm (SessionStart + UserPromptSubmit additionalContext)", Install: "palate hook install", Verified: true},
+	{Name: "ZCode", Capture: "hook-based learning (SessionStart/UserPromptSubmit/PostToolUse/Stop)", Injection: "push prewarm (SessionStart + UserPromptSubmit additionalContext, strict-JSON hook output)", Install: "palate hook install", Verified: true},
 	{Name: "OMP (oh-my-pi)", Capture: "recall-only (hooks unverified)", Injection: "MCP recall", Install: "palate serve (MCP)", Verified: false},
 	{Name: "Hermes", Capture: "recall-only (hooks unverified)", Injection: "MCP recall", Install: "palate serve (MCP)", Verified: false},
 	{Name: "Pi", Capture: "recall-only (hooks unverified)", Injection: "MCP recall", Install: "palate serve (MCP)", Verified: false},

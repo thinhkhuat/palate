@@ -9,7 +9,7 @@ func TestRegistryHonest(t *testing.T) {
 			if a.Capture != "recall-only (hooks unverified)" {
 				t.Fatalf("%s should be recall-only until TASK-900 passes: %q", a.Name, a.Capture)
 			}
-		case "Claude Code", "Command Code":
+		case "Claude Code", "Command Code", "ZCode":
 			if !a.Verified {
 				t.Fatalf("%s should be Verified=true (hook-based learning)", a.Name)
 			}

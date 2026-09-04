@@ -6,10 +6,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # bash exists on all three runners; keeps /tmp paths and ./executables
+        # working on windows-latest (PowerShell would break both).
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.22" }
+        with: { go-version: "1.26" } # go.mod requires 1.26.5
       - run: go vet ./...
       - run: go test ./... 2>&1 | head -100
       - run: CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate
