@@ -49,3 +49,19 @@ func TestGoalDedup(t *testing.T) {
 	_, fired3, _ := GoalPrewarm(db, cfg, "now about error handling wraps")
 	_ = fired3
 }
+
+func TestDeduperIsolated(t *testing.T) {
+	db, cfg := openMem(t)
+	_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "use table-driven tests for testing", Category: "Testing"}, nil)
+	prompt := "I need to write table-driven tests for my Go code"
+	a, b := &Deduper{}, &Deduper{}
+	if _, fired, _ := a.GoalPrewarm(db, cfg, prompt); !fired {
+		t.Fatalf("first deduper should fire")
+	}
+	if _, fired, _ := b.GoalPrewarm(db, cfg, prompt); !fired {
+		t.Fatalf("separate deduper must fire independently (no shared global)")
+	}
+	if _, fired, _ := a.GoalPrewarm(db, cfg, prompt); fired {
+		t.Fatalf("same deduper should suppress repeats")
+	}
+}

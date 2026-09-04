@@ -1,6 +1,7 @@
 package render
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -118,11 +119,12 @@ func Reimport(conn *sql.DB, path string) (int, error) {
 				continue
 			}
 			var exists string
-			err := conn.QueryRow(`SELECT id FROM preferences WHERE statement=? AND category=? AND valid_until IS NULL`, stmt, currentCat).Scan(&exists)
+			err := conn.QueryRow(`SELECT id FROM preferences WHERE statement=? AND valid_until IS NULL LIMIT 1`, stmt).Scan(&exists)
 			if err == nil {
 				continue
 			}
-			id := fmt.Sprintf("import-%d", imported+100000)
+			sum := sha256.Sum256([]byte(currentCat + "\x00" + stmt))
+			id := fmt.Sprintf("import-%x", sum[:8])
 			_, err = conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, trust_tier, veracity) VALUES(?,?,?,?,?,?,?,?,?)`,
 				id, currentCat, stmt, 0.4, 0.5, "imported", `["imported"]`, "IMPORTED", "imported")
 			if err == nil {

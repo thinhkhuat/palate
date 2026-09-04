@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -54,6 +55,7 @@ func Forget(conn *sql.DB, id string) error {
 	for _, t := range tables {
 		res, _ := conn.Exec(fmt.Sprintf(`DELETE FROM %s WHERE id=?`, t), id)
 		if n, _ := res.RowsAffected(); n > 0 {
+			_, _ = conn.Exec(`DELETE FROM memory_embeddings WHERE memory_id=?`, id)
 			_ = AppendEvent(conn, "forget", fmt.Sprintf(`{"id":%q,"table":%q}`, id, t))
 			return nil
 		}
@@ -70,6 +72,34 @@ type RecallResult struct {
 }
 
 func Recall(conn *sql.DB, query string, limit int, includeConflicts bool) ([]RecallResult, error) {
+	return RecallAt(conn, query, limit, includeConflicts, nil)
+}
+
+func RecallAt(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time) ([]RecallResult, error) {
+	return RecallAtWithDecay(conn, query, limit, includeConflicts, asOf, 0, 0)
+}
+
+func RecallAtWithDecay(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time, cFloor, halfLifeHours float64) ([]RecallResult, error) {
+	return RecallFull(conn, query, limit, includeConflicts, asOf, RecallOptions{CFloor: cFloor, HalfLifeHours: halfLifeHours})
+}
+
+type RecallOptions struct {
+	CFloor         float64
+	HalfLifeHours  float64
+	Freshness      FreshnessWeights
+	RRFK           int
+}
+
+type FreshnessWeights struct {
+	Enabled       bool
+	T1Days        int
+	T1Weight      float64
+	T2Days        int
+	T2Weight      float64
+	T3Weight      float64
+}
+
+func RecallFull(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time, opts RecallOptions) ([]RecallResult, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -78,8 +108,13 @@ func Recall(conn *sql.DB, query string, limit int, includeConflicts bool) ([]Rec
 		return recallRecent(conn, limit)
 	}
 	ftsResults, _ := ftsSearch(conn, query, limit*2)
-	prefs, _ := recallPreferences(conn, query, limit*2)
-	merged := rrfMerge(ftsResults, prefs, 60)
+	prefs, _ := recallPreferencesFull(conn, query, limit*2, includeConflicts, asOf, opts)
+	sort.SliceStable(prefs, func(i, j int) bool { return prefs[i].Score > prefs[j].Score })
+	k := opts.RRFK
+	if k <= 0 {
+		k = 60
+	}
+	merged := rrfMerge(ftsResults, prefs, k)
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
@@ -150,10 +185,27 @@ func ftsSearch(conn *sql.DB, query string, limit int) ([]RecallResult, error) {
 }
 
 func recallPreferences(conn *sql.DB, query string, limit int) ([]RecallResult, error) {
+	return recallPreferencesAt(conn, query, limit, true, nil)
+}
+
+func recallPreferencesAt(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time) ([]RecallResult, error) {
+	return recallPreferencesWithDecay(conn, query, limit, includeConflicts, asOf, 0, 0)
+}
+
+func recallPreferencesWithDecay(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time, cFloor, halfLifeHours float64) ([]RecallResult, error) {
+	return recallPreferencesFull(conn, query, limit, includeConflicts, asOf, RecallOptions{CFloor: cFloor, HalfLifeHours: halfLifeHours})
+}
+
+func recallPreferencesFull(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time, opts RecallOptions) ([]RecallResult, error) {
 	q := "%" + query + "%"
+	filter := ""
+	if !includeConflicts {
+		filter = ` AND id NOT IN (SELECT c.conflicting_id FROM conflicts c JOIN preferences loser ON loser.id=c.conflicting_id JOIN preferences winner ON winner.id=c.preference_id WHERE c.resolved_at IS NULL AND loser.confidence < winner.confidence)
+		          AND id NOT IN (SELECT c.preference_id FROM conflicts c JOIN preferences loser ON loser.id=c.preference_id JOIN preferences winner ON winner.id=c.conflicting_id WHERE c.resolved_at IS NULL AND loser.confidence < winner.confidence)`
+	}
 	rows, err := conn.Query(`
-		SELECT id, statement, confidence, importance FROM preferences
-		WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
+		SELECT id, statement, confidence, importance, last_reinforced_at FROM preferences
+		WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)`+filter+`
 		ORDER BY confidence * importance DESC LIMIT ?`, q, q, limit)
 	if err != nil {
 		return nil, err
@@ -163,12 +215,64 @@ func recallPreferences(conn *sql.DB, query string, limit int) ([]RecallResult, e
 	for rows.Next() {
 		var id, stmt string
 		var conf, imp float64
-		if err := rows.Scan(&id, &stmt, &conf, &imp); err != nil {
+		var lastReinforced string
+		if err := rows.Scan(&id, &stmt, &conf, &imp, &lastReinforced); err != nil {
 			continue
 		}
-		out = append(out, RecallResult{ID: id, Content: stmt, Score: conf * imp, Table: "preferences", Importance: imp})
+		eff := conf
+		if asOf != nil && opts.HalfLifeHours > 0 {
+			eff = decayAt(conf, opts.CFloor, opts.HalfLifeHours, lastReinforced, *asOf)
+		}
+		fresh := 1.0
+		if opts.Freshness.Enabled {
+			fresh = freshnessWeight(lastReinforced, asOf, opts.Freshness)
+		}
+		out = append(out, RecallResult{ID: id, Content: stmt, Score: eff * imp * fresh, Table: "preferences", Importance: imp})
 	}
 	return out, nil
+}
+
+// freshnessWeight applies the tiered T1/T2/T3 recency multiplier from config.
+// Disabled by default (weight 1.0); enable via freshness.enabled.
+func freshnessWeight(lastReinforcedAt string, asOf *time.Time, fw FreshnessWeights) float64 {
+	t, err := time.Parse(time.RFC3339, lastReinforcedAt)
+	if err != nil {
+		t, _ = time.Parse("2006-01-02 15:04:05", lastReinforcedAt)
+	}
+	now := time.Now().UTC()
+	if asOf != nil {
+		now = *asOf
+	}
+	ageDays := now.Sub(t).Hours() / 24
+	if ageDays < 0 {
+		return fw.T1Weight
+	}
+	if fw.T1Days > 0 && ageDays <= float64(fw.T1Days) {
+		return fw.T1Weight
+	}
+	if fw.T2Days > 0 && ageDays <= float64(fw.T2Days) {
+		return fw.T2Weight
+	}
+	return fw.T3Weight
+}
+
+// decayAt replays exponential decay pinned to the asOf instant instead of
+// wall-clock, so `recall --as-of` is deterministic for a fixed DB state.
+func decayAt(c, cFloor, halfLifeHours float64, lastReinforcedAt string, asOf time.Time) float64 {
+	t, err := time.Parse(time.RFC3339, lastReinforcedAt)
+	if err != nil {
+		t, _ = time.Parse("2006-01-02 15:04:05", lastReinforcedAt)
+	}
+	d := asOf.Sub(t).Hours()
+	if d < 0 {
+		return c
+	}
+	lambda := math.Log(2) / halfLifeHours
+	decayed := c * math.Exp(-lambda*d)
+	if decayed < cFloor {
+		return cFloor
+	}
+	return decayed
 }
 
 func rrfMerge(a, b []RecallResult, k int) []RecallResult {
@@ -261,6 +365,9 @@ func Sleep(conn *sql.DB) (int, error) {
 	return claimed, nil
 }
 
+// VectorSearchFallback is the cosine-similarity path used when the sqlite-vec
+// build provides real embeddings. Without writers in memory_embeddings it
+// scans zero rows; kept as the documented seam for the vec build.
 func VectorSearchFallback(conn *sql.DB, queryVec []float64, limit int) ([]RecallResult, error) {
 	rows, err := conn.Query(`SELECT memory_id, vector_json FROM memory_embeddings`)
 	if err != nil {
@@ -320,19 +427,4 @@ func cosine(a, b []float64) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
-}
-
-func HybridScore(vecScore, ftsScore, importance, recencyDecay float64, cfgVec, cfgFTS, cfgImp float64) float64 {
-	if recencyDecay == 0 {
-		recencyDecay = 1
-	}
-	return (cfgVec*vecScore + cfgFTS*ftsScore + cfgImp*importance) * recencyDecay
-}
-
-func RecencyDecay(ageHours, halfLifeHours float64) float64 {
-	if halfLifeHours <= 0 {
-		return 1
-	}
-	lambda := math.Log(2) / halfLifeHours
-	return math.Exp(-lambda * ageHours)
 }

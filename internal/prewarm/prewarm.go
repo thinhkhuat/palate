@@ -64,12 +64,33 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 
 var lastGoalHash string
 
+// Deduper carries goal-dedup state for one caller. Hook handlers are
+// one-shot processes (fresh state per invocation); long-lived callers
+// (MCP server, daemon) keep one Deduper so repeats within a session
+// suppress but separate sessions stay independent.
+type Deduper struct {
+	lastGoalHash string
+}
+
+func (d *Deduper) GoalPrewarm(conn *sql.DB, cfg config.Config, userPrompt string) (Block, bool, error) {
+	hash := goalHash(userPrompt)
+	if hash == d.lastGoalHash {
+		return Block{Scope: "goal"}, false, nil
+	}
+	d.lastGoalHash = hash
+	return goalPrewarmUncached(conn, cfg, userPrompt)
+}
+
 func GoalPrewarm(conn *sql.DB, cfg config.Config, userPrompt string) (Block, bool, error) {
 	hash := goalHash(userPrompt)
 	if hash == lastGoalHash {
 		return Block{Scope: "goal"}, false, nil
 	}
 	lastGoalHash = hash
+	return goalPrewarmUncached(conn, cfg, userPrompt)
+}
+
+func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Block, bool, error) {
 	keywords := extractKeywords(userPrompt)
 	if len(keywords) == 0 {
 		return Block{Scope: "goal"}, false, nil

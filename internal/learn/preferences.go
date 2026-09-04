@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
@@ -105,6 +106,10 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 	}
 	nowStr := now.Format(time.RFC3339)
 
+	if existing == nil && sig.Category != "" {
+		existing, _ = findContradiction(conn, sig.Category, sig.Statement)
+	}
+
 	if existing != nil {
 		dh := deltaHours(existing.LastReinforcedAt, asOf)
 		c := Decay(existing.Confidence, cfg.CFloor, cfg.HalfLifeHours, dh)
@@ -167,7 +172,131 @@ func findByStatement(conn *sql.DB, category, statement string) (*Preference, err
 }
 
 func isContradiction(a, b string) bool {
+	na, nb := normalizeStatement(a), normalizeStatement(b)
+	if na == "" || nb == "" || na == nb {
+		return false
+	}
+	pa, pb := stripNegation(na), stripNegation(nb)
+	negA, negB := isNegated(na), isNegated(nb)
+	if pa == pb && negA != negB {
+		return true
+	}
+	sa, sb := significantWords(na), significantWords(nb)
+	onlyA, onlyB := diffWords(sa, sb)
+	if len(onlyA) != 1 || len(onlyB) != 1 {
+		return false
+	}
+	return antonymPair(onlyA, onlyB)
+}
+
+var negationWords = map[string]bool{
+	"never": true, "not": true, "no": true, "don't": true, "dont": true,
+	"avoid": true, "stop": true, "instead": true,
+}
+
+func normalizeStatement(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.Trim(s, ".!?,;:")
+	fields := strings.Fields(s)
+	return strings.Join(fields, " ")
+}
+
+func stripNegation(s string) string {
+	var out []string
+	for _, w := range strings.Fields(s) {
+		w = strings.Trim(w, ".!?,;:")
+		if !negationWords[w] {
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func isNegated(s string) bool {
+	for _, w := range strings.Fields(s) {
+		if negationWords[strings.Trim(w, ".!?,;:")] {
+			return true
+		}
+	}
 	return false
+}
+
+var stopWords = map[string]bool{
+	"the": true, "a": true, "an": true, "is": true, "are": true, "to": true,
+	"for": true, "in": true, "on": true, "of": true, "and": true, "or": true,
+	"use": true, "using": true, "with": true, "i": true, "you": true,
+	"always": true, "prefer": true, "prefers": true,
+}
+
+func significantWords(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.Fields(stripNegation(s)) {
+		w = strings.Trim(w, ".!?,;:")
+		if w == "" || stopWords[w] {
+			continue
+		}
+		out[w] = true
+	}
+	return out
+}
+
+func diffWords(a, b map[string]bool) (map[string]bool, map[string]bool) {
+	onlyA, onlyB := map[string]bool{}, map[string]bool{}
+	for w := range a {
+		if !b[w] {
+			onlyA[w] = true
+		}
+	}
+	for w := range b {
+		if !a[w] {
+			onlyB[w] = true
+		}
+	}
+	return onlyA, onlyB
+}
+
+var antonymPairs = [][2]string{
+	{"named", "default"},
+	{"tabs", "spaces"},
+	{"early", "nested"},
+	{"small", "large"},
+	{"static", "dynamic"},
+	{"sync", "async"},
+}
+
+func antonymPair(onlyA, onlyB map[string]bool) bool {
+	for _, p := range antonymPairs {
+		if (onlyA[p[0]] && onlyB[p[1]]) || (onlyA[p[1]] && onlyB[p[0]]) {
+			return true
+		}
+	}
+	return false
+}
+
+// findContradiction scans live preferences in the same category for a
+// statement contradicting the incoming one. Exact matches are handled by
+// findByStatement; this covers near-misses like "use X" vs "never use X".
+func findContradiction(conn *sql.DB, category, statement string) (*Preference, error) {
+	rows, err := conn.Query(`SELECT id, category, statement, confidence, importance, source, provenance, valid_from, valid_until, created_at, last_reinforced_at, reinforcement_count, owner, trust_tier, veracity
+		FROM preferences WHERE category=? AND valid_until IS NULL`, category)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p Preference
+		var validUntil sql.NullString
+		if err := rows.Scan(&p.ID, &p.Category, &p.Statement, &p.Confidence, &p.Importance, &p.Source, &p.Provenance, &p.ValidFrom, &validUntil, &p.CreatedAt, &p.LastReinforcedAt, &p.ReinforcementCount, &p.Owner, &p.TrustTier, &p.Veracity); err != nil {
+			continue
+		}
+		if isContradiction(p.Statement, statement) {
+			if validUntil.Valid {
+				p.ValidUntil = &validUntil.String
+			}
+			return &p, nil
+		}
+	}
+	return nil, sql.ErrNoRows
 }
 
 func insertConflict(conn *sql.DB, existingID, newStatement string, w float64, cfg config.Config, nowStr string) error {
@@ -197,8 +326,8 @@ func ListPreferences(conn *sql.DB, includeConflicted bool) ([]Preference, error)
 	q := `SELECT id, category, statement, confidence, importance, source, provenance, valid_from, valid_until, created_at, last_reinforced_at, reinforcement_count, owner, trust_tier, veracity
 		FROM preferences WHERE valid_until IS NULL`
 	if !includeConflicted {
-		q += ` AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
-		          AND id NOT IN (SELECT preference_id FROM conflicts WHERE resolved_at IS NULL AND confidence < (SELECT confidence FROM preferences WHERE id=conflicting_id))`
+		q += ` AND id NOT IN (SELECT c.conflicting_id FROM conflicts c JOIN preferences loser ON loser.id=c.conflicting_id JOIN preferences winner ON winner.id=c.preference_id WHERE c.resolved_at IS NULL AND loser.confidence < winner.confidence)
+		          AND id NOT IN (SELECT c.preference_id FROM conflicts c JOIN preferences loser ON loser.id=c.preference_id JOIN preferences winner ON winner.id=c.conflicting_id WHERE c.resolved_at IS NULL AND loser.confidence < winner.confidence)`
 	}
 	q += ` ORDER BY category ASC, confidence DESC`
 	rows, err := conn.Query(q)

@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -53,10 +52,3 @@ func Decrypt(ciphertext string, key []byte) ([]byte, error) {
 	nonce, ct := data[:nonceSize], data[nonceSize:]
 	return gcm.Open(nil, nonce, ct, nil)
 }
-
-func HashPassphrase(passphrase string) string {
-	h := sha256.Sum256([]byte(passphrase))
-	return fmt.Sprintf("%x", h[:8])
-}
-
-var _ = HashPassphrase

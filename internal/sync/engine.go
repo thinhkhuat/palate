@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -99,15 +98,6 @@ func PushChanges(db *sql.DB, events []Event) error {
 		}
 	}
 	return nil
-}
-
-func SortedKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func ResolveLWW(a, b Event) Event {

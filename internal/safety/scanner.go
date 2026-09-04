@@ -67,11 +67,8 @@ func WrapUntrusted(content string) string {
 
 func ScanAndWrap(s string) (string, ScanResult) {
 	r := Scan(s)
-	if r.Flagged && r.Reason == "injection" {
-		return WrapUntrusted(r.Cleaned), r
-	}
 	if r.Flagged {
 		return WrapUntrusted(r.Cleaned), r
 	}
-	return WrapUntrusted(s), r
+	return s, r
 }

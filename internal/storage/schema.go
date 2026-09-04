@@ -179,6 +179,7 @@ func initSchema(conn *sql.DB) error {
 		`CREATE TRIGGER IF NOT EXISTS trg_wm_update AFTER UPDATE OF content ON working_memory BEGIN UPDATE fts_working SET content=new.content WHERE rowid=new.rowid; END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_wm_delete AFTER DELETE ON working_memory BEGIN DELETE FROM fts_working WHERE rowid=old.rowid; END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_em_insert AFTER INSERT ON episodic_memory BEGIN INSERT INTO fts_episodic(rowid, content) VALUES (new.rowid, new.content); END`,
+		`CREATE TRIGGER IF NOT EXISTS trg_em_update AFTER UPDATE OF content ON episodic_memory BEGIN UPDATE fts_episodic SET content=new.content WHERE rowid=new.rowid; END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_em_delete AFTER DELETE ON episodic_memory BEGIN DELETE FROM fts_episodic WHERE rowid=old.rowid; END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_pref_insert AFTER INSERT ON preferences BEGIN INSERT INTO fts_preferences(rowid, statement, category) VALUES (new.rowid, new.statement, new.category); END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_pref_update AFTER UPDATE OF statement ON preferences BEGIN UPDATE fts_preferences SET statement=new.statement, category=new.category WHERE rowid=new.rowid; END`,

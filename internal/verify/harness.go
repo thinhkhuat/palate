@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+
+	"github.com/thinhkhuat/palate/internal/storage"
 )
 
 type Report struct {
@@ -65,7 +68,41 @@ func RunCapture(conn *sql.DB, pure bool) (Report, error) {
 }
 
 func RunRetrieval(conn *sql.DB, pure bool) (Report, error) {
-	return RunCapture(conn, pure)
+	hits := 0
+	for _, s := range ScenariosV1 {
+		results, err := storage.Recall(conn, s.Expected, 5, true)
+		if err != nil {
+			continue
+		}
+		for _, r := range results {
+			if strings.Contains(strings.ToLower(r.Content), strings.ToLower(s.Expected)) {
+				hits++
+				break
+			}
+		}
+	}
+	rates := map[string]float64{}
+	if len(ScenariosV1) > 0 {
+		rates["retrieval_hit_rate"] = float64(hits) / float64(len(ScenariosV1))
+	}
+	caveats := "n=" + fmt.Sprint(len(ScenariosV1)) + "; hash=" + ScenariosHash()
+	if pure {
+		caveats += "; --pure: oracles disabled"
+	} else {
+		caveats += "; oracles may be active — use --pure for clean measurement"
+	}
+	judge := os.Getenv("PALATE_JUDGE")
+	if judge == "" {
+		judge = "unconfigured (set PALATE_JUDGE)"
+	}
+	return Report{
+		Version:       ScenariosVersion,
+		ScenariosHash: ScenariosHash(),
+		Judge:         judge,
+		Pure:          pure,
+		CaptureRates:  rates,
+		Caveats:       caveats,
+	}, nil
 }
 
 func IndependenceCheck() []string {

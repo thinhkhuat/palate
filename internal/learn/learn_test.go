@@ -87,7 +87,7 @@ func TestProposalsBoundary(t *testing.T) {
 	if eventsAfterPropose != eventsBefore {
 		t.Fatalf("propose should not create events: before %d after %d", eventsBefore, eventsAfterPropose)
 	}
-	_, err = PromoteProposalWithApply(db, id, "stated_preference", cfg, func(sig Signal) error {
+	_, err = PromoteProposal(db, id, "stated_preference", cfg, func(sig Signal) error {
 		_, e := ApplySignal(db, cfg, sig, nil)
 		return e
 	})

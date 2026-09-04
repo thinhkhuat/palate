@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -203,10 +202,13 @@ func checkAuthGuard(cfg config.Config, addr string) error {
 	if err != nil {
 		host = addr
 	}
+	token := os.Getenv(cfg.MCP.TokenEnv)
 	if isLoopback(host) {
+		if host == "" && token == "" {
+			return fmt.Errorf("refusing to bind %s without %s: empty host binds all interfaces, use 127.0.0.1 explicitly or set a token", addr, cfg.MCP.TokenEnv)
+		}
 		return nil
 	}
-	token := os.Getenv(cfg.MCP.TokenEnv)
 	if token == "" {
 		return fmt.Errorf("refusing to bind %s without %s (loopback only without token)", addr, cfg.MCP.TokenEnv)
 	}
@@ -227,11 +229,3 @@ func isLoopback(host string) bool {
 func CheckToken(provided, expected string) bool {
 	return hmac.Equal([]byte(provided), []byte(expected)) && expected != ""
 }
-
-func hashToken(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return fmt.Sprintf("%x", h[:4])
-}
-
-var _ = strings.Contains
-var _ = hashToken

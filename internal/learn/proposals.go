@@ -49,7 +49,7 @@ func ListProposals(conn *sql.DB) ([]Proposal, error) {
 
 func PromoteProposal(conn *sql.DB, proposalID, asSignal string, cfg interface {
 	WeightFor(string) float64
-}) (*Proposal, error) {
+}, apply func(Signal) error) (*Proposal, error) {
 	var p Proposal
 	err := conn.QueryRow(`SELECT id, content, category, source, proposed_weight, status, created_at FROM proposals WHERE id=?`, proposalID).Scan(
 		&p.ID, &p.Content, &p.Category, &p.Source, &p.ProposedWeight, &p.Status, &p.CreatedAt)
@@ -70,28 +70,13 @@ func PromoteProposal(conn *sql.DB, proposalID, asSignal string, cfg interface {
 	if sig.Type == "" {
 		sig.Type = SignalStatedPreference
 	}
+	if err := apply(sig); err != nil {
+		return nil, err
+	}
 	_, err = conn.Exec(`UPDATE proposals SET status='promoted' WHERE id=?`, proposalID)
 	if err != nil {
 		return nil, err
 	}
-	_ = sig
 	_ = w
 	return &p, nil
-}
-
-func PromoteProposalWithApply(conn *sql.DB, proposalID, asSignal string, cfg interface {
-	WeightFor(string) float64
-}, apply func(Signal) error) (*Proposal, error) {
-	p, err := PromoteProposal(conn, proposalID, asSignal, cfg)
-	if err != nil {
-		return nil, err
-	}
-	sig := Signal{Type: SignalType(asSignal), Statement: p.Content, Category: p.Category}
-	if sig.Type == "" {
-		sig.Type = SignalStatedPreference
-	}
-	if err := apply(sig); err != nil {
-		return nil, err
-	}
-	return p, nil
 }
