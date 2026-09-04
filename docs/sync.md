@@ -6,7 +6,7 @@ Event-log sync with optional client-side E2EE. Server sees metadata only when E2
 
 - Append-only `events` log; `EventHash(memory_id|op|ts|device|payload|parents|importance)` deterministic.
 - `PullChanges` / `PushChanges` cursor pagination `WHERE (created_at, id) > (?,?)` (not bare timestamp).
-- Fingerprint dedup on push; `parent_event_ids` ancestors for LWW.
+- Push skips ids already present; conflict resolution is LWW (timestamp → importance → device id).
 
 ## E2EE
 

@@ -25,8 +25,8 @@ Harness-native "taste" (like Command Code's closed one) works because the harnes
 ```sh
 brew install thinhkhuat/palate/palate   # or: go install github.com/thinhkhuat/palate/cmd/palate@latest
 palate init
-palate doctor                          # → green? (sqlite, fts5, vector, 12 adapters, scanner)
-palate hook install                    # Claude Code + Command Code — one command
+palate doctor                          # → green? (sqlite, fts5, vector, 13 adapters, scanner)
+palate hook install                    # Claude Code + Command Code + ZCode — one command
 
 palate prefer "use table-driven tests"
 palate recall "testing" --json
@@ -46,13 +46,14 @@ Detailed install for every harness: **[INSTALL.md](INSTALL.md)**
 |---------|-------------|-----|
 | **Claude Code** | **Learning** — hook-based (`PostToolUse` / `UserPromptSubmit` / `Stop` / `SessionStart` + `PreCompact`) | `palate hook install` |
 | **Command Code** | **Learning** — mirrors Claude Code via `~/.commandcode` | `palate hook install` |
+| **ZCode** | **Learning** — hook-based (`SessionStart` / `UserPromptSubmit` / `PostToolUse` / `Stop`; strict-JSON hook output) | `palate hook install` |
 | **OMP (oh-my-pi)** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Hermes** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Pi / OpenClaw / OpenCode** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Codex / Cursor / Windsurf / OpenWebUI** | Recall-only | `palate serve` (MCP) |
 | **Generic MCP** | Recall-only | `palate serve` (stdio / `--port` SSE) |
 
-> Beyond Claude Code / Command Code, every adapter is **recall-only until its hooks are proven**. Palate never overclaims.
+> Beyond Claude Code / Command Code / ZCode, every adapter is **recall-only until its hooks are proven**. Palate never overclaims.
 
 Per-harness wiring (human + agent copy-paste): [`INSTALL.md`](INSTALL.md) §2
 
@@ -66,9 +67,9 @@ Observable signal → safety gate (secret + injection scan) → confidence updat
                                               push prewarm (session / intent) ←→ recall / TASTE.md
 ```
 
-**Confidence math:** `decay(c, c_floor, half_life=168h, Δt) → reinforce/ weaken (w·0.3) → clamp [c_floor,1.0]`, bump `last_reinforced_at` + `reinforcement_count`. New preference seeds at `max(c_floor, w·0.5)`. Tie-break: `confidence → reinforcement_count → last_reinforced_at`. Every mutation is append-only in `events` — replay is deterministic when pinned to an `as_of` instant.
+**Confidence math:** `decay(c, c_floor, half_life=168h, Δt) → reinforce/ weaken (w·0.3) → clamp [c_floor,1.0]`, bump `last_reinforced_at` + `reinforcement_count`. Contradictions (negation/antonym, same-category scan) weaken the old row and open a `conflicts` row — the loser hides, the winner shows. New preference seeds at `max(c_floor, w·0.5)`. Tie-break: `confidence → reinforcement_count → last_reinforced_at`. Every mutation is append-only in `events` — replay is deterministic when pinned to an `as_of` instant (`recall --as-of RFC3339`).
 
-**Storage:** BEAM-like tiers `working → episodic → scratchpad`, FTS5 (`UPDATE OF content` only), `preferences` + `conflicts` bi-temporal, `capture_counters`, hybrid `FTS + importance × recency_decay` (full `0.5/0.3/0.2` gated behind the `sqlite-vec` build).
+**Storage:** BEAM-like tiers `working → episodic → scratchpad`, FTS5 triggers on all content tables, `preferences` + `conflicts` bi-temporal, `capture_counters`, recall = FTS + preference scan + RRF with decay replay, conflict filtering, and optional freshness tiers (JSON+cosine vec seam for the `sqlite-vec` build).
 
 **Skills (Phase 9):** Corrections with `reinforcement_count ≥2` cluster by category; ≥3 → deterministic `SKILL.md` (`agentskills.io` frontmatter) via `palate skill cluster`. Candidates are inert until `palate skill install`. Rumination gate rejects cosmetic edits and demands `why_better ≥40` + a testable prediction.
 
@@ -83,16 +84,16 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | Command | What it does |
 |---------|-------------|
 | `palate init` | Create `.palate/palate.db` (0700/0600, WAL) |
-| `palate doctor` | Green check over sqlite, fts5, vector, 12 adapters, scanner |
+| `palate doctor` | Green check over sqlite, fts5, vector, 13 adapters, scanner |
 | `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted` |
 | `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct`) |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
-| `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent) |
+| `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |
 | `palate lint / push / pull / reindex` | `TASTE.md` is lossy; `reindex` rebuilds FTS from DB |
 | `palate skill {cluster,list,install,ruminate,stats}` | Promotion + rumination |
 | `palate verify {capture,retrieval} --pure` | Blinded scenarios, `n` + `hash` + caveats (never a headline without them) |
-| `palate hook install` | Wire Claude Code + Command Code hooks (idempotent) |
-| `palate serve [--port]` | MCP stdio/SSE — `PALATE_MCP_TOKEN` + loopback allowlist on SSE |
+| `palate hook install [--harness H]` | Wire Claude Code + Command Code + ZCode hooks (idempotent; `--harness zcode-global` for `~/.zcode/cli/config.json`) |
+| `palate serve [--port]` | MCP stdio/SSE — `PALATE_MCP_TOKEN` + loopback allowlist on SSE (bare `:port` binds all interfaces: token or `127.0.0.1:`) |
 
 Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust tiers) + env overrides (`PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_MCP_TOKEN`).
 
@@ -101,7 +102,7 @@ Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust t
 ## Security
 
 - Every write boundary censors secrets (`sk-`, `ghp_`, `PRIVATE KEY`, `AKIA`) and scans for injections (instruction-override, role-spoof, zero-width) — `trust_tier=IMPORTED` + `[PALATE: FLAGGED]` banner, quarantined until `palate promote`.
-- MCP: `PALATE_MCP_TOKEN` + `hmac.compare_digest` + allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` without a token.
+- MCP: `PALATE_MCP_TOKEN` + `hmac.compare_digest` + allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` — or empty-host `:port` — without a token.
 - Reimport quarantine: `TASTE.md → IMPORTED w≤0.4`.
 - Untrusted memory is always wrapped in `<UNTRUSTED_CONTENT>` before injection.
 

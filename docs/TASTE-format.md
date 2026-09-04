@@ -16,7 +16,7 @@
 
 - `.palate/palate.db` + `events` log is truth.
 - `TASTE.md` is a lossy render artifact — deleting the DB loses learning state.
-- `palate reimport` parses category+statement, ignores confidence, inserts as `IMPORTED w=0.4` quarantine (diff-aware, idempotent).
+- `palate reimport` parses category+statement, ignores confidence, inserts as `IMPORTED w=0.4` quarantine (content-hash `import-<hex>` IDs, statement-level dedup across categories, idempotent).
 - `palate reindex` rebuilds FTS/vector from DB, never from markdown.
 
 ## What is not wired

@@ -6,7 +6,7 @@
 
 ```sh
 palate verify capture --pure   # per-signal-type rates from capture_counters
-palate verify retrieval --pure # Hit@K/MRR on labeled corpus (when wired)
+palate verify retrieval --pure # retrieval_hit_rate: scenario Expected-text recall over ScenariosV1
 PALATE_JUDGE=gpt-4o palate verify capture  # records judge identity
 ```
 
@@ -23,7 +23,9 @@ Each `verify` report prints:
 {"version":"v1","scenarios_hash":"...","judge":"...","pure":true,"caveats":"n=6; hash=...; --pure: oracles disabled"}
 ```
 
-Without `PALATE_JUDGE` and `--pure`, the number is not publishable.
+Capture reports per-signal rates under `capture_rates`; retrieval reports
+`retrieval_hit_rate` (fraction of scenarios whose Expected text is recalled)
+under the same key. Without `PALATE_JUDGE` and `--pure`, the number is not publishable.
 
 ## What is not wired
 
