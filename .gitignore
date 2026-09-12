@@ -15,3 +15,4 @@ dist/
 TASTE.md
 command-code-session-*.md
 package-lock.json
+__pycache__/
