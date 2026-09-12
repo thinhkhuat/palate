@@ -630,9 +630,9 @@ func cmdHook() *cobra.Command {
 	c.AddCommand(uninstall)
 
 	c.AddCommand(&cobra.Command{
-		Use:    "help",
+		Use:     "help",
 		Aliases: []string{"list", "status"},
-		Short:  "Show palate hook wiring status per harness",
+		Short:   "Show palate hook wiring status per harness",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, _ := os.Getwd()
 			type row struct {
@@ -684,7 +684,7 @@ func cmdHook() *cobra.Command {
 			}
 			out := map[string]interface{}{
 				"hookSpecificOutput": map[string]interface{}{
-					"hookEventName":    "SessionStart",
+					"hookEventName":     "SessionStart",
 					"additionalContext": block.Content,
 				},
 			}
@@ -704,8 +704,15 @@ func cmdHook() *cobra.Command {
 				Prompt string `json:"prompt"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
+			// Scan the whole prompt, not the extracted clause: the trigger regex
+			// starts at "prefer", which would strip an injection prefix and
+			// launder the payload into a trusted STATED preference.
 			if stmt, cat := learn.ExtractStatedPreference(input.Prompt); stmt != "" {
-				_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
+				if safety.Scan(input.Prompt).Flagged {
+					storage.BumpDrop(db, "stated_preference")
+				} else {
+					_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
+				}
 			}
 			if input.Prompt == "" {
 				return nil
@@ -713,7 +720,7 @@ func cmdHook() *cobra.Command {
 			if block, fired, _ := prewarm.GoalPrewarm(db, cfg, input.Prompt); fired {
 				out := map[string]interface{}{
 					"hookSpecificOutput": map[string]interface{}{
-						"hookEventName":    "UserPromptSubmit",
+						"hookEventName":     "UserPromptSubmit",
 						"additionalContext": block.Content,
 					},
 				}

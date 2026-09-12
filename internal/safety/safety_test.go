@@ -27,3 +27,19 @@ func TestInjectionScan(t *testing.T) {
 		t.Fatalf("false positive injection: %+v", r2)
 	}
 }
+
+// Real vendor keys carry hyphens after the sk- prefix (sk-ant-api03-…,
+// sk-proj-…); the pattern must not require a contiguous alphanumeric run.
+func TestSecretFilterHyphenatedKeys(t *testing.T) {
+	for _, k := range []string{
+		"sk-ant-api03-f6c84405449abbba7562bd16fbb8412b1bcd3ae82a1cb48e209827985483",
+		"sk-proj-abc123def456ghi789jkl012mno345",
+	} {
+		if !ContainsSecret("use key " + k + " please") {
+			t.Fatalf("should detect %s", k)
+		}
+		if got := Censor("use key " + k + " please"); got != "use key [REDACTED] please" {
+			t.Fatalf("censor left the key: %s", got)
+		}
+	}
+}

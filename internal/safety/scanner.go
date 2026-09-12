@@ -6,7 +6,7 @@ import (
 )
 
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)sk-[a-zA-Z0-9]{20,}`),
+	regexp.MustCompile(`(?i)sk-[a-zA-Z0-9_-]{20,}`),
 	regexp.MustCompile(`ghp_[a-zA-Z0-9]{20,}`),
 	regexp.MustCompile(`gho_[a-zA-Z0-9]{20,}`),
 	regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----`),
