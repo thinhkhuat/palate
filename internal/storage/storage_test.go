@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 )
 
@@ -77,5 +78,24 @@ func TestCaptureCounters(t *testing.T) {
 	_ = db.QueryRow(`SELECT hits, drops FROM capture_counters WHERE signal_type='user_diff'`).Scan(&hits, &drops)
 	if hits != 2 || drops != 1 {
 		t.Fatalf("counters: hits=%d drops=%d", hits, drops)
+	}
+}
+
+// The DSN must use the driver's _pragma dialect: a mattn-style key would be
+// ignored and leave the DB in rollback-journal mode with no busy timeout.
+func TestOpenAppliesWALAndBusyTimeout(t *testing.T) {
+	Close()
+	db, err := Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(Close)
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("journal_mode = %q, err %v; want wal", mode, err)
+	}
+	var timeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil || timeout < 5000 {
+		t.Fatalf("busy_timeout = %d, err %v; want >= 5000", timeout, err)
 	}
 }

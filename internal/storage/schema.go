@@ -25,7 +25,10 @@ func Open(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)", path)
+	// modernc.org/sqlite only honours _pragma=name(value); the mattn-style
+	// _journal_mode/_busy_timeout keys are silently ignored, which left the DB in
+	// rollback-journal mode with a zero busy timeout.
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
