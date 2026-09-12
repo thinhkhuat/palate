@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -138,9 +137,6 @@ func applyEnv(c *Config) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			c.HalfLifeHours = f
 		}
-	}
-	if v := os.Getenv("PALATE_MCP_TOKEN"); v != "" {
-		_ = strings.TrimSpace(v)
 	}
 }
 

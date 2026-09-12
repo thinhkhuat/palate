@@ -60,6 +60,15 @@ func Forget(conn *sql.DB, id string) error {
 			return nil
 		}
 	}
+	// A preference may still be referenced from conflicts (FK on preference_id and
+	// conflicting_id, foreign_keys=1), so clear those rows before deleting it.
+	_, _ = conn.Exec(`DELETE FROM conflicts WHERE preference_id=? OR conflicting_id=?`, id, id)
+	if res, err := conn.Exec(`DELETE FROM preferences WHERE id=?`, id); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			_ = AppendEvent(conn, "forget", fmt.Sprintf(`{"id":%q,"table":%q}`, id, "preferences"))
+			return nil
+		}
+	}
 	return fmt.Errorf("not found: %s", id)
 }
 

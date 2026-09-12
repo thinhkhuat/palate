@@ -90,23 +90,57 @@ func InferCategoryFromStatement(stmt string) string {
 	return inferCategory(stmt)
 }
 
+// ExtractCandidates turns a user edit into at most one user_diff signal. Without a
+// baseline there is nothing to compare, so nothing is learned; the statement
+// carries only the lines the user added, never the file head.
 func ExtractCandidates(diffBefore, diffAfter string) []Signal {
 	if strings.TrimSpace(diffBefore) == strings.TrimSpace(diffAfter) {
 		return nil
 	}
+	stmt := summarizeDiff(diffBefore, diffAfter)
+	if stmt == "" {
+		return nil
+	}
 	return []Signal{{
-		Type:     SignalUserDiff,
-		Statement: summarizeDiff(diffBefore, diffAfter),
-		Category: inferCategory(diffAfter),
-		Before:   diffBefore,
-		After:    diffAfter,
+		Type:      SignalUserDiff,
+		Statement: stmt,
+		Category:  inferCategory(diffAfter),
+		Before:    diffBefore,
+		After:     diffAfter,
 	}}
 }
 
+const maxStatementRunes = 160
+
+// summarizeDiff returns "prefers: <added lines>" built from the lines present in
+// after but absent from before, or "" when there is no baseline or nothing was added.
 func summarizeDiff(before, after string) string {
-	a := strings.TrimSpace(after)
-	if len(a) > 200 {
-		a = a[:200]
+	if strings.TrimSpace(before) == "" {
+		return ""
 	}
-	return "prefers: " + a
+	seen := map[string]bool{}
+	for _, l := range strings.Split(before, "\n") {
+		seen[strings.Join(strings.Fields(l), " ")] = true
+	}
+	var added []string
+	for _, l := range strings.Split(after, "\n") {
+		l = strings.Join(strings.Fields(l), " ")
+		if l == "" || seen[l] {
+			continue
+		}
+		added = append(added, l)
+	}
+	if len(added) == 0 {
+		return ""
+	}
+	return truncateRunes("prefers: "+strings.Join(added, " / "), maxStatementRunes)
+}
+
+// truncateRunes cuts on rune boundaries and appends an ellipsis when it cut.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }

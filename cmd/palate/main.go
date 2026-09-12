@@ -43,7 +43,17 @@ func openDB(cfg config.Config) *sql.DB {
 	return db
 }
 
-func main() {
+// gateExplicit rejects statements that fail the secret or injection scan.
+// Explicit statements are stored at the STATED tier and pushed unredacted
+// into prewarm, so flagged content is refused rather than stored cleaned.
+func gateExplicit(stmt string) error {
+	if scan := safety.Scan(stmt); scan.Flagged {
+		return fmt.Errorf("rejected: %s pattern", scan.Reason)
+	}
+	return nil
+}
+
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "palate",
 		Short: "Palate — open taste engine",
@@ -73,8 +83,11 @@ func main() {
 	root.AddCommand(cmdSkill())
 	root.AddCommand(cmdUpdate())
 	root.AddCommand(cmdReindex())
+	return root
+}
 
-	if err := root.Execute(); err != nil {
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
@@ -99,17 +112,23 @@ func cmdInit() *cobra.Command {
 
 func cmdDoctor() *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Self-diagnostic",
+		Use:          "doctor",
+		Short:        "Self-diagnostic",
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			fmt.Printf("config: %s\n", cfgFile)
 			fmt.Printf("db: %s\n", cfg.DBPath)
 			fmt.Printf("c_floor: %.2f half_life: %.0fh\n", cfg.CFloor, cfg.HalfLifeHours)
+			// Diagnose only: never create the database as a side effect.
+			if _, statErr := os.Stat(cfg.DBPath); os.IsNotExist(statErr) {
+				fmt.Printf("db: MISSING %s (run: palate init)\n", cfg.DBPath)
+				return fmt.Errorf("doctor: database missing")
+			}
 			db, err := storage.Open(cfg.DBPath)
 			if err != nil {
 				fmt.Printf("db: FAIL %v\n", err)
-				return nil
+				return fmt.Errorf("doctor: database unreadable at %s", cfg.DBPath)
 			}
 			defer storage.Close()
 			var v string
@@ -215,7 +234,7 @@ func cmdRecall() *cobra.Command {
 				return nil
 			}
 			for _, r := range results {
-				fmt.Printf("[%s] %s (%.3f)\n", r.Table, r.Content, r.Score)
+				fmt.Printf("[%s] %s (%.3f) id=%s\n", r.Table, r.Content, r.Score, r.ID)
 			}
 			return nil
 		},
@@ -289,13 +308,22 @@ func cmdServe() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			if port != "" {
-				return mcp.ServeSSE(cfg, ":"+port)
+				return mcp.ServeSSE(cfg, sseAddr(port))
 			}
 			return mcp.ServeStdio(cfg)
 		},
 	}
 	c.Flags().StringVar(&port, "port", "", "SSE port (default: stdio)")
 	return c
+}
+
+// sseAddr turns --port into a listen address: a bare port becomes ":port",
+// a host:port form such as 127.0.0.1:4317 passes through unchanged.
+func sseAddr(port string) string {
+	if strings.Contains(port, ":") {
+		return port
+	}
+	return ":" + port
 }
 
 func cmdStats() *cobra.Command {
@@ -326,7 +354,11 @@ func cmdForget() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			return storage.Forget(db, args[0])
+			if err := storage.Forget(db, args[0]); err != nil {
+				return err
+			}
+			fmt.Println("forgot", args[0])
+			return nil
 		},
 	}
 }
@@ -967,8 +999,8 @@ func cmdPrefer() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stmt := args[0]
-			if safety.ContainsSecret(stmt) {
-				return fmt.Errorf("rejected: secret pattern")
+			if err := gateExplicit(stmt); err != nil {
+				return err
 			}
 			cfg := loadConfig()
 			db := openDB(cfg)
@@ -985,28 +1017,28 @@ func cmdPrefer() *cobra.Command {
 
 func cmdCorrect() *cobra.Command {
 	return &cobra.Command{
-		Use:   "correct [tried] [wrong_because] [fix]",
+		Use:   "correct [tried] [wrong_because] [fix] [trigger_context]",
 		Short: "Record 4-field correction (Mnemos schema)",
 		Args:  cobra.RangeArgs(1, 4),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tried := args[0]
-			fix := ""
-			if len(args) >= 3 {
-				fix = args[2]
-			} else if len(args) == 2 {
-				fix = args[1]
+			c := learn.Correction{Tried: args[0]}
+			switch len(args) {
+			case 2:
+				c.Fix = args[1]
+			case 3:
+				c.WrongBecause, c.Fix = args[1], args[2]
+			case 4:
+				c.WrongBecause, c.Fix, c.TriggerContext = args[1], args[2], args[3]
 			}
-			stmt := fix
-			if stmt == "" {
-				stmt = tried
-			}
-			if safety.ContainsSecret(stmt) {
-				return fmt.Errorf("rejected: secret pattern")
+			for _, txt := range c.Texts() {
+				if err := gateExplicit(txt); err != nil {
+					return err
+				}
 			}
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitCorrection, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil)
+			_, err := learn.RecordCorrection(db, cfg, c)
 			if err != nil {
 				return err
 			}
@@ -1152,9 +1184,9 @@ func cmdSkill() *cobra.Command {
 
 func cmdUpdate() *cobra.Command {
 	return &cobra.Command{
-		Use: "update", Short: "Self-update (sha256 verify, rollback on bad sig)",
+		Use: "update", Short: "Print update instructions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("update: fetch latest release, verify sha256, replace binary, rollback on failure")
+			fmt.Println("update: install the latest release with one of")
 			fmt.Println("  curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh | sh")
 			fmt.Println("  or: go install github.com/thinhkhuat/palate/cmd/palate@latest")
 			return nil

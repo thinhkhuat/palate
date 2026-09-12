@@ -1,6 +1,7 @@
 package learn
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -350,6 +351,10 @@ func ListPreferences(conn *sql.DB, includeConflicted bool) ([]Preference, error)
 	return out, nil
 }
 
+// newID keeps a sortable UnixNano prefix and adds 8 random bytes so that
+// back-to-back calls within the same clock tick never collide.
 func newID() string {
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%d-%x", time.Now().UnixNano(), b)
 }
