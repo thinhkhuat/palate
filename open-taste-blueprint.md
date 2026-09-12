@@ -2,7 +2,7 @@
 goal: "Palate — an open, harness-agnostic 'coding taste' engine that learns a developer's style preferences from observable behavioral signals (model edits, user corrections, post-hoc diffs, explicit tools) and injects them into AI coding harnesses that support lifecycle hooks (Claude Code, Pi, OpenClaw, OpenCode), with confidence scores, human-readable git-shareable markdown output, recall tools for every MCP client, and honest verification."
 version: "2.1 (master blueprint, revised — gap closure)"
 date_created: 2026-08-15
-last_updated: 2026-08-15
+last_updated: 2026-09-12
 owner: "thinhkhuat"
 status: 'Planned'
 tags: [taste, memory, agent, mcp, blueprint, open-source, go, sqlite]
@@ -11,6 +11,13 @@ tags: [taste, memory, agent, mcp, blueprint, open-source, go, sqlite]
 # Palate — Open "Taste" for Every Hook-Capable Harness
 
 ![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+
+> **Historical design record — not current authority (note added 2026-09-12).** This blueprint is the 2026-08-15 design as planned. The code has moved on; where the two disagree, the code, `docs/architecture.md` and `docs/decisions.md` win. Items below that were built and later **removed** from the codebase:
+>
+> - **Sync / E2EE (SEC-002, TASK-802, DEP-006, FILE-010, `sync.md` in TASK-1001)** — `internal/sync` and `docs/sync.md` were deleted on 2026-09-12 and `golang.org/x/crypto` dropped; `palate push`/`pull` only render and reimport `TASTE.md`. Reason and revert path: `docs/decisions.md` row 7.
+> - **Adapter helper files (FILE-014)** — `pi.go`, `openclaw.go`, `opencode.go`, `codex.go`, `cursor.go`, `windsurf.go`, `openwebui.go` (plus `omp.go`, `hermes.go`) were deleted on 2026-09-11 as uncalled code; the harness matrix lives in `internal/adapters/registry.go`. See `plans/reports/review2-fix-report.md`.
+>
+> Do not re-create these from this document. Treat every task row below as "as planned in August", not "as shipped".
 
 Palate replicates the *mechanism* of Command Code's closed `taste` feature — learning a developer's coding preferences from behavioral signals, storing them with confidence scores, and conditioning an agent on them — as an **open, local-first, self-hostable project**. It is the distillation of everything learned across this session's research into one master blueprint.
 
@@ -247,7 +254,7 @@ Success Criteria: 3 clustered corrections produce a portable SKILL.md; a cosmeti
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
 | TASK-801 | Sync engine: append-only `events` log replicated bidirectionally; LWW conflict resolution with (timestamp, importance, device_id) tiebreak + version chains | | |
-| TASK-802 | E2EE: optional client-side encryption (Fernet/XSalsa20-Poly1305 class), key derived via Argon2id/PBKDF2, never leaves machine; server sees metadata only | | |
+| TASK-802 | E2EE: optional client-side encryption (Fernet/XSalsa20-Poly1305 class), key derived via Argon2id/PBKDF2, never leaves machine; server sees metadata only | REMOVED 2026-09-12 | see banner; `docs/decisions.md` row 7 |
 | TASK-803 | Prompt-injection scanner at write boundary (mnemos): instruction-override phrases, role-spoofing, fake tool syntax, zero-width/bidi; flag → `[PALATE: FLAGGED]` banner; low-risk sanitized | | |
 | TASK-804 | Read-side trust: memory injected as untrusted content (OpenHands `<UNTRUSTED_CONTENT>` pattern); provenance + `last_verified_at` on every preference | | |
 
@@ -278,7 +285,7 @@ Success Criteria: TASK-900 verification evidence exists for every post-MVP harne
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-1001 | Docs: architecture.md, TASTE-format.md, adapters matrix (with capture-capability column), security.md (threat model), sync.md, benchmarking.md, each with a "What is not wired" honesty section | | |
+| TASK-1001 | Docs: architecture.md, TASTE-format.md, adapters matrix (with capture-capability column), security.md (threat model), ~~sync.md~~ (deleted 2026-09-12), benchmarking.md, each with a "What is not wired" honesty section | | |
 | TASK-1002 | Packaging: goreleaser (Linux/macOS/Windows amd64+arm64), Homebrew tap, install script, `palate update` self-update with sha256 verify | | |
 | TASK-1003 | Release v0.1.0 with the verification numbers, then iterate | | |
 
@@ -304,7 +311,7 @@ Success Criteria: clean install on macOS/Linux/Windows from the docs; `palate do
 - **DEP-003**: FTS5 (built into SQLite ≥3.35) — bundled via modernc
 - **DEP-004**: Optional `sqlite-vec` extension for native vectors; fallback: JSON vectors + cosine (pure Go)
 - **DEP-005**: Optional local embeddings via Ollama/llama.cpp (bge-m3 class); remote OpenAI-compatible as opt-in
-- **DEP-006**: `cryptography`-class E2EE (Go stdlib `crypto/` + Argon2id via `golang.org/x/crypto`)
+- **DEP-006**: `cryptography`-class E2EE (Go stdlib `crypto/` + Argon2id via `golang.org/x/crypto`) — **REMOVED 2026-09-12** (`x/crypto` no longer a dependency)
 - **DEP-007**: cobra or stdlib `flag` for CLI; `gopkg.in/yaml.v3` for config
 - **DEP-008**: goreleaser, GitHub Actions, Homebrew tap for packaging
 
@@ -321,11 +328,11 @@ Success Criteria: clean install on macOS/Linux/Windows from the docs; `palate do
 - **FILE-007**: `internal/prewarm/prewarm.go` — token-budgeted context composer (Mechanism A + B) + compaction recovery
 - **FILE-008**: `internal/render/taste_md.go` — TASTE.md renderer + `lint`
 - **FILE-009**: `internal/skills/promote.go` + `internal/skills/ruminate.go` — promotion + falsifiability gate
-- **FILE-010**: `internal/sync/engine.go` + `internal/sync/encryption.go` — event-log sync + E2EE
+- **FILE-010**: `internal/sync/engine.go` + `internal/sync/encryption.go` — event-log sync + E2EE — **REMOVED 2026-09-12** (`internal/sync` deleted; `docs/decisions.md` row 7)
 - **FILE-011**: `internal/safety/scanner.go` — prompt-injection scanner
 - **FILE-012**: `internal/mcp/server.go` — MCP server (stdio/SSE) + tool registry
 - **FILE-013**: `internal/adapters/claude_code.go` — hooks config generator (UserPromptSubmit/PostToolUse/Stop/SessionStart/PreCompact) + skill
-- **FILE-014**: `internal/adapters/pi.go`, `openclaw.go`, `opencode.go` (learning-capable) + `codex.go`, `cursor.go`, `windsurf.go`, `openwebui.go` (recall-only)
+- **FILE-014**: `internal/adapters/pi.go`, `openclaw.go`, `opencode.go` (learning-capable) + `codex.go`, `cursor.go`, `windsurf.go`, `openwebui.go` (recall-only) — **REMOVED 2026-09-11** (all seven files deleted as uncalled; matrix lives in `registry.go`)
 - **FILE-015**: `internal/verify/harness.go` — capture/behavior/retrieval verification + independence checklist
 - **FILE-016**: `internal/verify/scenarios.go` — the fixed, versioned scenario set
 - **FILE-017**: `config.yaml` + `internal/config/config.go`

@@ -73,9 +73,7 @@ Observable signal → safety gate (secret + injection scan) → confidence updat
 
 **Skills (Phase 9):** Corrections with `reinforcement_count ≥2` cluster by category; ≥3 → deterministic `SKILL.md` (`agentskills.io` frontmatter) via `palate skill cluster`. Candidates are inert until `palate skill install`. Rumination gate rejects cosmetic edits and demands `why_better ≥40` + a testable prediction.
 
-**Sync (Phase 10):** Append-only `events` with `EventHash`, cursor `WHERE (created_at, id) > (?,?)`, `ResolveLWW(timestamp, importance, device_id)`, `OpaqueCursor`, and optional E2EE (`Argon2id → AES-GCM`, key never leaves the machine — server sees metadata only). Leases, reclaim, oracles all stay out.
-
-See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](docs/TASTE-format.md), [`docs/sync.md`](docs/sync.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](docs/TASTE-format.md).
 
 ---
 
@@ -84,16 +82,16 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | Command | What it does |
 |---------|-------------|
 | `palate init` | Create `.palate/palate.db` (0700/0600, WAL) |
-| `palate doctor` | Green check over sqlite, fts5, vector, 13 adapters, scanner |
-| `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted` |
-| `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct`) |
+| `palate doctor` | Check sqlite, fts5, vector, 13 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
+| `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted`; `recall` prints the `id=` that `forget` takes, for memories and preferences alike |
+| `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
 | `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |
 | `palate lint / push / pull / reindex` | `TASTE.md` is lossy; `reindex` rebuilds FTS from DB |
 | `palate skill {cluster,list,install,ruminate,stats}` | Promotion + rumination |
 | `palate verify {capture,retrieval} --pure` | Blinded scenarios, `n` + `hash` + caveats (never a headline without them) |
 | `palate hook install [--harness H]` | Wire Claude Code + Command Code + ZCode hooks (idempotent; `--harness zcode-global` for `~/.zcode/cli/config.json`) |
-| `palate serve [--port]` | MCP stdio/SSE — `PALATE_MCP_TOKEN` + loopback allowlist on SSE (bare `:port` binds all interfaces: token or `127.0.0.1:`) |
+| `palate serve [--port]` | MCP stdio/SSE — `--port 4317` or `--port 127.0.0.1:4317`; with `PALATE_MCP_TOKEN` set every SSE request needs `Authorization: Bearer` (bare `:port` binds all interfaces: token or `127.0.0.1:`) |
 
 Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust tiers) + env overrides (`PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_MCP_TOKEN`).
 
@@ -101,8 +99,8 @@ Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust t
 
 ## Security
 
-- Every write boundary censors secrets (`sk-`, `ghp_`, `PRIVATE KEY`, `AKIA`) and scans for injections (instruction-override, role-spoof, zero-width) — `trust_tier=IMPORTED` + `[PALATE: FLAGGED]` banner, quarantined until `palate promote`.
-- MCP: `PALATE_MCP_TOKEN` + `hmac.compare_digest` + allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` — or empty-host `:port` — without a token.
+- Explicit writes (`palate prefer` / `palate correct`, MCP `palate_prefer` / `palate_correct` / `palate_reject` / `palate_accept`) are refused on any secret or injection match. `remember` and `TASTE.md` reimport instead censor secrets (`sk-`, `ghp_`, `PRIVATE KEY`, `AKIA`) and quarantine injections — `trust_tier=IMPORTED` + `[PALATE: FLAGGED]` banner, promotable only via `palate promote`.
+- MCP: bind guard — `PALATE_MCP_TOKEN` + loopback allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` or empty-host `:port` without a token. Request guard — once a token is set, every SSE request needs `Authorization: Bearer <token>` (`hmac.Equal`); anything else is 401.
 - Reimport quarantine: `TASTE.md → IMPORTED w≤0.4`.
 - Untrusted memory is always wrapped in `<UNTRUSTED_CONTENT>` before injection.
 
@@ -115,8 +113,8 @@ Details: [`docs/security.md`](docs/security.md)
 - **Install for every harness (human + agent):** [`INSTALL.md`](INSTALL.md)
 - **Adapters — the single source:** [`docs/adapters.md`](docs/adapters.md)
 - **Verification gate (honest row per harness):** [`docs/adapters/verification.md`](docs/adapters/verification.md)
-- **Architecture / TASTE format / Sync / Benchmarking:** [`docs/architecture.md`](docs/architecture.md) · [`docs/TASTE-format.md`](docs/TASTE-format.md) · [`docs/sync.md`](docs/sync.md) · [`docs/benchmarking.md`](docs/benchmarking.md)
-- **Blueprint (source of truth):** [`open-taste-blueprint.md`](open-taste-blueprint.md) v2.1 · **Decisions:** [`docs/decisions.md`](docs/decisions.md) · **Plan:** [`plans/260815-1906-palate-v21-open-taste-engine/plan.md`](plans/260815-1906-palate-v21-open-taste-engine/plan.md) (13/13, 133/133)
+- **Architecture / TASTE format / Benchmarking:** [`docs/architecture.md`](docs/architecture.md) · [`docs/TASTE-format.md`](docs/TASTE-format.md) · [`docs/benchmarking.md`](docs/benchmarking.md)
+- **Blueprint (original design, frozen 2026-08-15; historical, not current authority):** [`open-taste-blueprint.md`](open-taste-blueprint.md) v2.1 · **Decisions:** [`docs/decisions.md`](docs/decisions.md) · **Plan:** [`plans/260815-1906-palate-v21-open-taste-engine/plan.md`](plans/260815-1906-palate-v21-open-taste-engine/plan.md) (13/13, 133/133)
 
 ---
 

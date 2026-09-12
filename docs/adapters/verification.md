@@ -33,5 +33,5 @@
 # manual check — fetch docs and confirm hook names
 curl -s https://pi.dev/docs/extensions | grep -i hook
 # record the exact hook name + URL in the table above, then implement
-# internal/adapters/pi.go behind the PAT-001 registry
+# a new internal/adapters/pi.go behind the PAT-001 registry (registry.go)
 ```

@@ -117,7 +117,7 @@ Add an MCP server entry in the harness's MCP config (path varies by harness — 
 { "mcpServers": { "palate": { "command": "palate", "args": ["serve"] } } }
 ```
 
-Constants: `internal/adapters/omp.go:OMPMCPConfig`, `internal/adapters/hermes.go:HermesMCPConfig` (same shape).
+Registry entries: `internal/adapters/registry.go` (OMP, Hermes — recall-only).
 
 **Agent:**
 
@@ -135,7 +135,7 @@ palate recall "testing" --json
 palate prefer "I prefer X"   # explicit floor, always works
 ```
 
-Implementation: `internal/adapters/omp.go`, `internal/adapters/hermes.go` — hints only; no learning claim until TASK-900 passes.
+Implementation: registry data only (`internal/adapters/registry.go`); no learning claim until TASK-900 passes.
 
 ---
 
@@ -145,9 +145,9 @@ Same MCP pattern as §2.2. Register `palate serve` as an MCP server in the harne
 
 | Harness | Config hint | Module |
 |---------|------------|--------|
-| Pi | `pi install npm:@<user>/pi-palate` pattern (when published) — until then MCP | `internal/adapters/pi.go` |
-| OpenClaw | plugin `allowConversationAccess` — until verified, MCP only | `internal/adapters/openclaw.go` |
-| OpenCode | plugin — until verified, MCP only | `internal/adapters/opencode.go` |
+| Pi | `pi install npm:@<user>/pi-palate` pattern (when published) — until then MCP | `internal/adapters/registry.go` |
+| OpenClaw | plugin `allowConversationAccess` — until verified, MCP only | `internal/adapters/registry.go` |
+| OpenCode | plugin — until verified, MCP only | `internal/adapters/registry.go` |
 
 ```sh
 palate doctor  # Pi/OpenClaw/OpenCode: recall-only (hooks unverified)
@@ -157,10 +157,10 @@ palate doctor  # Pi/OpenClaw/OpenCode: recall-only (hooks unverified)
 
 ### 2.4 Codex / Cursor / Windsurf / OpenWebUI — recall-only
 
-**Codex:** `~/.codex/config.toml` (`[mcp_servers.palate]`) + `AGENTS.md` note → `internal/adapters/codex.go`
-**Cursor:** `.cursor/mcp.json` + rules → `internal/adapters/cursor.go`
-**Windsurf / Devin:** rules + MCP → `internal/adapters/windsurf.go`
-**OpenWebUI:** `@tool` bridge → `internal/adapters/openwebui.go`
+**Codex:** `~/.codex/config.toml` (`[mcp_servers.palate]`) + `AGENTS.md` note
+**Cursor:** `.cursor/mcp.json` + rules
+**Windsurf / Devin:** rules + MCP
+**OpenWebUI:** `@tool` bridge
 
 All: `palate serve` as the MCP server; `palate doctor` shows `recall-only`.
 
@@ -178,18 +178,21 @@ palate serve
 palate serve --port 127.0.0.1:4317
 
 # SSE on a port (refuses 0.0.0.0 or bare :port without PALATE_MCP_TOKEN —
-# an empty host binds all interfaces)
+# an empty host binds all interfaces). With a token set, every request must
+# carry "Authorization: Bearer <token>" or it gets 401.
 PALATE_MCP_TOKEN=... palate serve --port 4317
 ```
 
-Tools exposed: `palate_recall`, `palate_remember`, `palate_correct`, `palate_prefer`, `palate_reject`, `palate_accept`, `palate_forget`, `palate_stats` — all with secret/injection gates.
+Tools exposed: `palate_recall`, `palate_remember`, `palate_correct`, `palate_prefer`, `palate_reject`, `palate_accept`, `palate_forget`, `palate_stats`. `correct`/`prefer`/`reject`/`accept` refuse on any secret or injection match; `remember` refuses secrets and quarantines injections (`[PALATE: FLAGGED]`); `recall`/`forget`/`stats` take no free-text content.
 
 ## 3. MCP auth (all harnesses)
 
 ```
 PALATE_MCP_TOKEN=<secret>          # required for non-loopback SSE (incl. bare :port)
 allowlist: 127.0.0.1, localhost, ::1, ip6-localhost
-rule: hmac.compare_digest; refuse to bind 0.0.0.0 or empty-host :port without token
+bind rule: refuse 0.0.0.0 or empty-host :port without a token
+request rule: when a token is set, every SSE request needs "Authorization: Bearer <token>"
+              (constant-time compare via hmac.Equal); anything else is 401
 ```
 
 Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
@@ -234,6 +237,5 @@ rm -rf .palate TASTE.md               # local data only; events log is gone with
 
 - OMP, Hermes, Pi, OpenClaw, OpenCode are **recall-only until `docs/adapters/verification.md` proves hooks** — no hidden learning.
 - Vectors are FTS5 + JSON cosine by default (`sqlite-vec` behind a build tag — zero-CGO default stays CGO-free).
-- Sync E2EE: events are encrypted, but the sync server sees metadata only — see `docs/sync.md` / `docs/security.md`.
 
 Further reading: [`docs/adapters.md`](docs/adapters.md) · [`docs/adapters/verification.md`](docs/adapters/verification.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/security.md`](docs/security.md)
