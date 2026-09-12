@@ -68,6 +68,8 @@ palate hook install          # .claude/settings.local.json + .commandcode/settin
 palate doctor                # adapter: Claude Code learning · Command Code learning · ZCode learning
 ```
 
+> Hook handlers open the DB with the same auto-create as `palate init`: the first hook that fires in a workspace without `.palate/` creates it (0700/0600). Run `palate init` first if you want that moment to be explicit.
+
 **Agent (explicit targets):**
 
 ```sh

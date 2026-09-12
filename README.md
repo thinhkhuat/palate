@@ -99,10 +99,10 @@ Config: [`config.yaml`](config.yaml) (weights, half-life, token budgets, trust t
 
 ## Security
 
-- Explicit writes (`palate prefer` / `palate correct`, MCP `palate_prefer` / `palate_correct` / `palate_reject` / `palate_accept`) are refused on any secret or injection match. `remember` and `TASTE.md` reimport instead censor secrets (`sk-`, `ghp_`, `PRIVATE KEY`, `AKIA`) and quarantine injections — `trust_tier=IMPORTED` + `[PALATE: FLAGGED]` banner, promotable only via `palate promote`.
+- Explicit writes (`palate prefer` / `palate correct`, MCP `palate_prefer` / `palate_correct` / `palate_reject` / `palate_accept`) are refused on any secret or injection match. The `hook user-prompt` chat-capture path drops an "I prefer …" clause when the whole prompt matches either scanner. `remember` rejects secrets and quarantines injections behind a `[PALATE: FLAGGED]` banner; `TASTE.md` reimport lands as `trust_tier=IMPORTED`, promotable only via `palate promote`.
 - MCP: bind guard — `PALATE_MCP_TOKEN` + loopback allowlist (`127.0.0.1, localhost, ::1, ip6-localhost`) + refusal to bind `0.0.0.0` or empty-host `:port` without a token. Request guard — once a token is set, every SSE request needs `Authorization: Bearer <token>` (`hmac.Equal`); anything else is 401.
 - Reimport quarantine: `TASTE.md → IMPORTED w≤0.4`.
-- Untrusted memory is always wrapped in `<UNTRUSTED_CONTENT>` before injection.
+- Prewarm pushes preferences only; quarantined `remember` rows keep their `[PALATE: FLAGGED]` banner wherever they are recalled.
 
 Details: [`docs/security.md`](docs/security.md)
 
