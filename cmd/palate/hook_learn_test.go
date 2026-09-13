@@ -79,8 +79,8 @@ func TestSessionStartSpawnsDetached(t *testing.T) {
 }
 
 // TestHooksDoNotSpawnWhenUnconfigured is the regression guard: with no LLM
-// configured, neither hook spawns, and the pre-phase-4 user_diff state-walk
-// path in the Stop handler still fires exactly as before.
+// configured, neither hook spawns, and the user_diff state walk still learns
+// a hand-edit — at UserPromptSubmit, never at Stop.
 func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 	setupTempProject(t)
 	calls := installSpawnSpy(t)
@@ -91,6 +91,42 @@ func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 		t.Fatalf("expected no spawn calls with LLM unconfigured, got %+v", *calls)
 	}
 
+	writeStaleSnapshot(t)
+	runHook(t, `{"session_id":"s1"}`, "hook", "stop")
+	out, err := runCLI(t, "export")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if strings.Contains(out, "prefers:") {
+		t.Fatalf("Stop must not learn a user_diff (the drift is the assistant's own), got: %s", out)
+	}
+	// Stop re-baselines: the recorded hash now matches the bytes on disk, and
+	// the snapshot is the current content, so the same drift cannot be
+	// credited to the user later.
+	state := loadModelEdits(filepath.Join(".palate", "model_edits.json"))
+	disk, _ := os.ReadFile("watched.txt")
+	if rec, ok := state["watched.txt"]; !ok || rec.Hash != fileHash(disk) || rec.Snapshot != string(disk) {
+		t.Fatalf("Stop must re-baseline the snapshot to disk, got %+v", state)
+	}
+
+	writeStaleSnapshot(t)
+	runHook(t, `{"prompt":"carry on"}`, "hook", "user-prompt")
+	out, err = runCLI(t, "export")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if !strings.Contains(out, "prefers:") {
+		t.Fatalf("UserPromptSubmit must learn the user_diff left since Stop, got: %s", out)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("expected no spawn calls after the regression check, got %+v", *calls)
+	}
+}
+
+// writeStaleSnapshot plants a model_edits.json entry whose hash and snapshot
+// predate the current bytes of watched.txt — the shape a hand-edit leaves.
+func writeStaleSnapshot(t *testing.T) {
+	t.Helper()
 	if err := os.MkdirAll(".palate", 0o700); err != nil {
 		t.Fatalf("mkdir .palate: %v", err)
 	}
@@ -104,19 +140,6 @@ func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(".palate", "model_edits.json"), b, 0o600); err != nil {
 		t.Fatalf("write model_edits.json: %v", err)
-	}
-
-	runHook(t, `{"session_id":"s1"}`, "hook", "stop")
-
-	out, err := runCLI(t, "export")
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
-	if !strings.Contains(out, "prefers:") {
-		t.Fatalf("expected the pre-phase-4 user_diff preference to still be stored: %s", out)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("expected no spawn calls after the regression check, got %+v", *calls)
 	}
 }
 

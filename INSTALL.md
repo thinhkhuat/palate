@@ -7,7 +7,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 | Path | Command | When to use |
 |------|---------|-------------|
 | Homebrew | `brew install thinhkhuat/palate/palate` | You have Homebrew + want upgrades via `brew upgrade` |
-| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.1.1` is published (real release SHA256s are filled by GoReleaser on publish) |
+| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.1.2` is published (real release SHA256s are filled by GoReleaser on publish) |
 | Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` | Any Unix with `curl` |
 | From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
 | Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
@@ -19,7 +19,7 @@ palate --help
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
 
-> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.1.1` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
+> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.1.2` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
 
 ## 1. First run (all harnesses)
 
@@ -135,7 +135,7 @@ palate prewarm --scope session | head -20
 palate prewarm --scope goal --prompt "write table-driven tests" | head -20
 ```
 
-Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → filtered `user_diff` (state-walk against `.palate/model_edits.json`), `PreCompact` → recovery (Claude Code / Command Code only).
+Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `.palate/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code / Command Code only).
 
 ---
 
@@ -238,7 +238,7 @@ Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
 | `explicit_correction` | 1.0 | you said "fix this" |
 | `explicit_reject` | 0.9 | |
 | `stated_preference` / `explicit_prefer` | 0.8 | |
-| `user_diff` | 0.6* | *hypothesis — content-bearing: Stop/SessionStart snapshot the model-edited file (4KB bound) and learn the before→after diff via `ExtractCandidates`; promote to 0.9 only if `verify capture` precision ≥0.7 |
+| `user_diff` | 0.6* | *hypothesis — content-bearing: PostToolUse snapshots the model-edited file (4KB bound), Stop re-baselines it, and UserPromptSubmit/SessionStart learn the before→after diff via `ExtractCandidates` — only drift the user could have caused counts; promote to 0.9 only if `verify capture` precision ≥0.7 |
 | `explicit_accept` | 0.6 | weak |
 | `model_edit` | 0.4 | weakest |
 | `llm_proposal` | — | never deterministic until `palate promote --as` |

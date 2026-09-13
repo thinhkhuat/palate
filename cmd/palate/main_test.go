@@ -46,6 +46,13 @@ func setupTempProject(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Chdir(dir)
+	// Hermetic LLM state: the developer's shell may export PALATE_LLM_* (it
+	// does on the maintainer's machine), which would flip the hooks into
+	// distiller mode and break every "unconfigured" assertion. Tests that
+	// need a gateway set these explicitly after this call.
+	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY"} {
+		t.Setenv(k, "")
+	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("db_path: .palate/palate.db\n"), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}

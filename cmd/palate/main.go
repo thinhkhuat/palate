@@ -732,6 +732,9 @@ func cmdHook() *cobra.Command {
 				Prompt string `json:"prompt"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
+			// The user just handed the turn back: anything that drifted from
+			// the Stop-time snapshot since then is a hand-edit — learn it now.
+			handleStateWalkUserDiffs(db, cfg)
 			// Superseded by the live session distiller when an LLM is
 			// configured: the same prompt text is already sitting in the
 			// transcript file the Stop hook is about to distill, so the
@@ -784,15 +787,10 @@ func cmdHook() *cobra.Command {
 			if err != nil {
 				return nil
 			}
-			h := fileHash(b)
 			statePath := filepath.Join(".palate", "model_edits.json")
 			_ = os.MkdirAll(".palate", 0700)
 			state := loadModelEdits(statePath)
-			snap := b
-			if len(snap) > 4096 {
-				snap = snap[:4096]
-			}
-			state[fp] = modelEdit{Hash: h, Snapshot: string(snap)}
+			state[fp] = newModelEdit(b)
 			if err := saveModelEdits(statePath, state); err != nil {
 				return nil
 			}
@@ -801,7 +799,7 @@ func cmdHook() *cobra.Command {
 	})
 	c.AddCommand(&cobra.Command{
 		Use:   "stop",
-		Short: "Stop handler (user_diff a/b/c filter)",
+		Short: "Stop handler (re-baselines model_edit snapshots; files[] payload learns user_diff)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			db := openDB(cfg)
@@ -833,14 +831,15 @@ func cmdHook() *cobra.Command {
 					}
 				}
 			} else {
-				// No files[] in the hook payload (what live harnesses send):
-				// diff recorded model edits against disk. Entries whose disk
-				// hash still matches stay in state for later checks.
-				for fp, rec := range modelEdits {
-					if applyUserDiffSignal(db, cfg, fp, rec.Hash, rec.Snapshot, "") {
-						delete(modelEdits, fp)
-					}
-				}
+				// No files[] in the hook payload (what live harnesses send).
+				// Stop fires while the assistant still owns the turn, so any
+				// drift between the PostToolUse snapshot and disk here is the
+				// assistant's own (a sed/python edit after an Edit/Write), not
+				// the user's. Re-baseline every snapshot to disk instead of
+				// learning; the user_diff comparison runs at the next
+				// UserPromptSubmit / SessionStart, the only moments where a
+				// change can only have come from the user.
+				refreshModelEdits(modelEdits)
 			}
 			_ = saveModelEdits(statePath, modelEdits)
 			if cfg.LLMConfigured() && input.TranscriptPath != "" {
@@ -1045,8 +1044,33 @@ func applyUserDiffSignal(db *sql.DB, cfg config.Config, path, recordedHash, snap
 	return true
 }
 
-// handleStateWalkUserDiffs runs the model_edits state walk at session start,
-// catching edits the user made between sessions.
+// refreshModelEdits re-baselines every recorded snapshot to the file's
+// current bytes (hash + 4KB bound) and drops entries whose file is gone. Used
+// at Stop so the assistant's own post-snapshot edits are absorbed instead of
+// being credited to the user at the next state walk.
+func refreshModelEdits(modelEdits map[string]modelEdit) {
+	for fp := range modelEdits {
+		b, err := os.ReadFile(fp)
+		if err != nil {
+			delete(modelEdits, fp)
+			continue
+		}
+		modelEdits[fp] = newModelEdit(b)
+	}
+}
+
+// newModelEdit records a file's hash plus a 4KB-bounded snapshot of its bytes.
+func newModelEdit(b []byte) modelEdit {
+	snap := b
+	if len(snap) > 4096 {
+		snap = snap[:4096]
+	}
+	return modelEdit{Hash: fileHash(b), Snapshot: string(snap)}
+}
+
+// handleStateWalkUserDiffs runs the model_edits state walk at SessionStart
+// and UserPromptSubmit — the two moments where drift since the last Stop can
+// only be the user's own hand-edit.
 func handleStateWalkUserDiffs(db *sql.DB, cfg config.Config) {
 	statePath := filepath.Join(".palate", "model_edits.json")
 	modelEdits := loadModelEdits(statePath)
