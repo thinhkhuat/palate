@@ -1,0 +1,24 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  # Lets an already-pushed tag be released after the fact: gh workflow run release.yml --ref vX.Y.Z
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 } # goreleaser needs tags + history for the changelog
+      - uses: actions/setup-go@v7
+        with: { go-version: "1.26" } # go.mod requires 1.26.5
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: a PAT with write access to thinhkhuat/homebrew-palate. Absent → brew step skipped.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

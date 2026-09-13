@@ -159,7 +159,7 @@ Details: [`docs/security.md`](docs/security.md)
 go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
 
-Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.3.0` is actually published, use `brew install --HEAD` or `go install`.
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: pushing a `v*` tag runs `.github/workflows/release.yml` (GoReleaser → GitHub Release with `palate_<ver>_<os>_<arch>.tar.gz` + `checksums.txt`, which `install.sh` downloads). The Homebrew tap push (`thinhkhuat/homebrew-palate`) only happens when the `HOMEBREW_TAP_GITHUB_TOKEN` secret is set; until then use `install.sh` or `go install`.
 
 ## License
 
