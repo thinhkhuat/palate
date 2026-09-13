@@ -50,14 +50,31 @@ func setupTempProject(t *testing.T) {
 	// does on the maintainer's machine), which would flip the hooks into
 	// distiller mode and break every "unconfigured" assertion. Tests that
 	// need a gateway set these explicitly after this call.
-	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY"} {
+	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY", "PALATE_HOME", "PALATE_DB_PATH", "PALATE_RENDER_AUTO"} {
 		t.Setenv(k, "")
 	}
+	// Hermetic home: the durable home is derived from HOME, so point it at a
+	// throwaway dir — tests run in the default (global) mode and never touch
+	// the developer's real ~/.claude/palate.
+	t.Setenv("HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("db_path: .palate/palate.db\n"), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}
 	storage.Close()
 	t.Cleanup(storage.Close)
+}
+
+// setupLegacyProject is setupTempProject plus the marker that pins the
+// per-repo layout: an existing ./.palate/palate.db.
+func setupLegacyProject(t *testing.T) {
+	t.Helper()
+	setupTempProject(t)
+	if err := os.MkdirAll(".palate", 0o700); err != nil {
+		t.Fatalf("mkdir .palate: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".palate", "palate.db"), nil, 0o600); err != nil {
+		t.Fatalf("touch legacy db: %v", err)
+	}
 }
 
 func TestSSEAddr(t *testing.T) {
@@ -85,6 +102,9 @@ func TestDoctorMissingDB(t *testing.T) {
 	}
 	if _, statErr := os.Stat(".palate"); !os.IsNotExist(statErr) {
 		t.Fatal(".palate must not be created as a side effect of doctor")
+	}
+	if _, statErr := os.Stat(loadConfig().DBPath); !os.IsNotExist(statErr) {
+		t.Fatal("the home DB must not be created as a side effect of doctor")
 	}
 }
 

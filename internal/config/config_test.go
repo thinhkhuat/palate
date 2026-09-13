@@ -4,7 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+func yamlUnmarshal(b []byte, v interface{}) error { return yaml.Unmarshal(b, v) }
 
 func TestLLMConfigured(t *testing.T) {
 	cases := []struct {
@@ -44,5 +48,212 @@ func TestDistillModeDefault(t *testing.T) {
 	}
 	if cfg.Distill.Mode != "auto" {
 		t.Fatalf("Load with no distill key: Mode = %q, want auto", cfg.Distill.Mode)
+	}
+}
+
+// resolveIn runs Resolve with cwd, HOME and the PALATE_* env pinned so the
+// precedence table below is hermetic on any machine.
+func resolveIn(t *testing.T, cwd, home, palateHome, dbPath string) Config {
+	t.Helper()
+	t.Chdir(cwd)
+	t.Setenv("HOME", home)
+	t.Setenv("PALATE_HOME", palateHome)
+	t.Setenv("PALATE_DB_PATH", dbPath)
+	cfg, err := Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	return cfg
+}
+
+func TestResolveHomePrecedence(t *testing.T) {
+	home := t.TempDir()
+	global := filepath.Join(home, ".claude", "palate")
+
+	t.Run("default is the global durable home", func(t *testing.T) {
+		cfg := resolveIn(t, t.TempDir(), home, "", "")
+		if cfg.Home != global || cfg.Legacy() {
+			t.Fatalf("Home=%q legacy=%v, want %q global", cfg.Home, cfg.Legacy(), global)
+		}
+		if cfg.DBPath != filepath.Join(global, "palate.db") {
+			t.Fatalf("DBPath=%q", cfg.DBPath)
+		}
+		if cfg.StateDir() != filepath.Join(global, "state") || cfg.TastePath() != filepath.Join(global, "TASTE.md") {
+			t.Fatalf("layout: state=%q taste=%q", cfg.StateDir(), cfg.TastePath())
+		}
+	})
+
+	t.Run("PALATE_HOME wins", func(t *testing.T) {
+		p := t.TempDir()
+		cfg := resolveIn(t, t.TempDir(), home, p, "")
+		if cfg.Home != p || cfg.Legacy() || cfg.DBPath != filepath.Join(p, "palate.db") {
+			t.Fatalf("Home=%q legacy=%v db=%q", cfg.Home, cfg.Legacy(), cfg.DBPath)
+		}
+	})
+
+	t.Run("home: in ./config.yaml wins over detection and default", func(t *testing.T) {
+		cwd := t.TempDir()
+		if err := os.WriteFile(filepath.Join(cwd, "config.yaml"), []byte("home: ./taste-home\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := resolveIn(t, cwd, home, "", "")
+		if cfg.Home != filepath.Join(cwd, "taste-home") || cfg.Legacy() {
+			t.Fatalf("Home=%q legacy=%v", cfg.Home, cfg.Legacy())
+		}
+	})
+
+	t.Run("existing ./.palate/palate.db pins legacy repo mode", func(t *testing.T) {
+		cwd := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(cwd, ".palate"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cwd, ".palate", "palate.db"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := resolveIn(t, cwd, home, "", "")
+		want := filepath.Join(cwd, ".palate")
+		if cfg.Home != want || !cfg.Legacy() {
+			t.Fatalf("Home=%q legacy=%v, want %q legacy", cfg.Home, cfg.Legacy(), want)
+		}
+		// legacy keeps 0.1.x's layout: state beside the DB, not under state/
+		if cfg.StateDir() != want || cfg.StatePath("model_edits.json") != filepath.Join(want, "model_edits.json") {
+			t.Fatalf("legacy StateDir=%q", cfg.StateDir())
+		}
+		if cfg.DBPath != filepath.Join(want, "palate.db") {
+			t.Fatalf("legacy DBPath=%q", cfg.DBPath)
+		}
+	})
+
+	t.Run("explicit db_path is not overridden by the home", func(t *testing.T) {
+		cwd := t.TempDir()
+		if err := os.WriteFile(filepath.Join(cwd, "config.yaml"), []byte("db_path: ./elsewhere.db\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := resolveIn(t, cwd, home, t.TempDir(), "")
+		if cfg.DBPath != filepath.Join(cwd, "elsewhere.db") {
+			t.Fatalf("DBPath=%q (explicit db_path must be kept, anchored to the cwd)", cfg.DBPath)
+		}
+	})
+
+	t.Run("PALATE_DB_PATH beats the derived path", func(t *testing.T) {
+		cfg := resolveIn(t, t.TempDir(), home, t.TempDir(), "/tmp/x/explicit.db")
+		if cfg.DBPath != "/tmp/x/explicit.db" {
+			t.Fatalf("DBPath=%q", cfg.DBPath)
+		}
+	})
+
+	t.Run("relative PALATE_HOME is made absolute against the cwd once", func(t *testing.T) {
+		cwd := t.TempDir()
+		cfg := resolveIn(t, cwd, home, "rel-home", "")
+		if !filepath.IsAbs(cfg.Home) || cfg.Home != filepath.Join(cwd, "rel-home") {
+			t.Fatalf("Home=%q", cfg.Home)
+		}
+	})
+
+	t.Run("tilde PALATE_HOME expands", func(t *testing.T) {
+		cfg := resolveIn(t, t.TempDir(), home, "~/tilde-home", "")
+		if cfg.Home != filepath.Join(home, "tilde-home") {
+			t.Fatalf("Home=%q", cfg.Home)
+		}
+	})
+}
+
+func TestHomeConfigIsReadWhenRepoHasNone(t *testing.T) {
+	home := t.TempDir()
+	p := filepath.Join(home, "ph")
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "config.yaml"), []byte("c_floor: 0.42\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := resolveIn(t, t.TempDir(), home, p, "")
+	if cfg.CFloor != 0.42 {
+		t.Fatalf("home config.yaml not applied: c_floor=%v", cfg.CFloor)
+	}
+	if cfg.Home != p {
+		t.Fatalf("home config.yaml must not move the home: %q", cfg.Home)
+	}
+}
+
+func TestEnsureLayoutSeedsConfigOnce(t *testing.T) {
+	home := t.TempDir()
+	cfg := resolveIn(t, t.TempDir(), home, "", "")
+	if err := cfg.EnsureLayout(); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{cfg.Home, cfg.StateDir(), cfg.BackupDir()} {
+		if st, err := os.Stat(d); err != nil || !st.IsDir() {
+			t.Fatalf("missing dir %s: %v", d, err)
+		}
+	}
+	seeded, err := os.ReadFile(cfg.HomeConfigPath())
+	if err != nil {
+		t.Fatalf("seed missing: %v", err)
+	}
+	if string(seeded) != string(seedYAML) {
+		t.Fatal("seed content differs from the embedded default")
+	}
+	if err := os.WriteFile(cfg.HomeConfigPath(), []byte("c_floor: 0.9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.EnsureLayout(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(cfg.HomeConfigPath()); string(b) != "c_floor: 0.9\n" {
+		t.Fatal("EnsureLayout overwrote a user-edited config.yaml")
+	}
+
+	// legacy mode never seeds a config into .palate
+	cwd := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(cwd, ".palate"), 0o700)
+	_ = os.WriteFile(filepath.Join(cwd, ".palate", "palate.db"), nil, 0o600)
+	lc := resolveIn(t, cwd, home, "", "")
+	if err := lc.EnsureLayout(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".palate", "config.yaml")); !os.IsNotExist(err) {
+		t.Fatal("legacy mode must not seed .palate/config.yaml")
+	}
+}
+
+// TestSeedMatchesDefaults pins the embedded seed.yaml to Default() so the
+// two cannot drift apart silently.
+func TestSeedMatchesDefaults(t *testing.T) {
+	var fromSeed Config
+	if err := yamlUnmarshal(seedYAML, &fromSeed); err != nil {
+		t.Fatalf("seed.yaml does not parse: %v", err)
+	}
+	d := Default()
+	if fromSeed.CFloor != d.CFloor || fromSeed.HalfLifeHours != d.HalfLifeHours || fromSeed.Weights != d.Weights || fromSeed.TokenBudgets != d.TokenBudgets || fromSeed.Hybrid != d.Hybrid || fromSeed.Distill != d.Distill {
+		t.Fatalf("seed.yaml drifted from Default():\nseed=%+v\ndef =%+v", fromSeed, d)
+	}
+}
+
+func TestRenderAutoKnob(t *testing.T) {
+	if !Default().Render.Auto {
+		t.Fatal("render.auto must default to on")
+	}
+	home := t.TempDir()
+	t.Setenv("PALATE_RENDER_AUTO", "0")
+	cfg := resolveIn(t, t.TempDir(), home, "", "")
+	if cfg.Render.Auto {
+		t.Fatal("PALATE_RENDER_AUTO=0 must turn auto render off")
+	}
+}
+
+func TestRelativeDBPathIsAnchoredToCwd(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "config.yaml"), []byte("db_path: ./x.db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := resolveIn(t, cwd, home, "", "")
+	if cfg.DBPath != filepath.Join(cwd, "x.db") {
+		t.Fatalf("relative db_path must be anchored to the cwd once: %q", cfg.DBPath)
+	}
+	cfg = resolveIn(t, cwd, home, "", "rel/env.db")
+	if cfg.DBPath != filepath.Join(cwd, "rel", "env.db") {
+		t.Fatalf("relative PALATE_DB_PATH must be anchored too: %q", cfg.DBPath)
 	}
 }

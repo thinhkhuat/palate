@@ -3,9 +3,11 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -13,7 +15,45 @@ import (
 var (
 	mu sync.RWMutex
 	db *sql.DB
+
+	// dirty is set by AppendEvent — the single funnel every mutation passes
+	// through — and cleared by FlushIfDirty. onDirtyFlush is registered once
+	// per process by the CLI and the MCP server (it renders TASTE.md); the
+	// storage package never imports render, so the callback breaks the cycle.
+	dirtyMu      sync.Mutex
+	dirty        bool
+	onDirtyFlush func(*sql.DB)
 )
+
+// SetOnDirtyFlush registers the callback run by FlushIfDirty and Close when
+// a mutation happened since the last flush. nil disables flushing.
+func SetOnDirtyFlush(fn func(*sql.DB)) {
+	dirtyMu.Lock()
+	defer dirtyMu.Unlock()
+	onDirtyFlush = fn
+}
+
+// FlushIfDirty runs the registered callback once if any mutation was logged
+// since the last flush. Long-lived processes (the MCP server) call it after
+// each write tool; everything else gets it for free from Close.
+func FlushIfDirty() {
+	dirtyMu.Lock()
+	run := dirty && onDirtyFlush != nil && db != nil
+	fn, conn := onDirtyFlush, db
+	if run {
+		dirty = false
+	}
+	dirtyMu.Unlock()
+	if run {
+		fn(conn)
+	}
+}
+
+func markDirty() {
+	dirtyMu.Lock()
+	dirty = true
+	dirtyMu.Unlock()
+}
 
 func Open(path string) (*sql.DB, error) {
 	mu.Lock()
@@ -45,6 +85,7 @@ func Open(path string) (*sql.DB, error) {
 }
 
 func Close() {
+	FlushIfDirty()
 	mu.Lock()
 	defer mu.Unlock()
 	if db != nil {
@@ -269,5 +310,55 @@ func DB() *sql.DB { return db }
 
 func AppendEvent(conn *sql.DB, eventType, payload string) error {
 	_, err := conn.Exec(`INSERT INTO events(event_type, payload) VALUES(?,?)`, eventType, payload)
+	if err == nil {
+		markDirty()
+	}
 	return err
+}
+
+// BackupBefore copies the DB file to <backupDir>/palate.db-<YYYYMMDD-HHMM>-<label>
+// ahead of a destructive verb (forget, pull). A missing DB is not an error —
+// there is nothing to protect yet. Returns the backup path ("" when skipped).
+func BackupBefore(dbPath, backupDir, label string) (string, error) {
+	src, err := os.Open(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer src.Close()
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(backupDir, fmt.Sprintf("%s-%s-%s", filepath.Base(dbPath), time.Now().Format("20060102-1504"), label))
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		return "", err
+	}
+	return dst, out.Close()
+}
+
+// NewestBackup returns the most recently modified file in backupDir, or "".
+func NewestBackup(backupDir string) string {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return ""
+	}
+	var newest string
+	var newestAt time.Time
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil || e.IsDir() {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestAt) {
+			newest, newestAt = filepath.Join(backupDir, e.Name()), info.ModTime()
+		}
+	}
+	return newest
 }

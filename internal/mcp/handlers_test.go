@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +18,12 @@ import (
 // so openStore() inside the handlers reuses it.
 func memStore(t *testing.T) *sql.DB {
 	t.Helper()
+	// Hermetic home: openStore resolves the durable home from HOME/PALATE_HOME
+	// and seeds its layout; never let a test touch the developer's real one.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PALATE_HOME", "")
+	t.Setenv("PALATE_RENDER_AUTO", "")
+	storage.SetOnDirtyFlush(nil)
 	storage.Close()
 	db, err := storage.Open(":memory:")
 	if err != nil {
@@ -119,5 +127,25 @@ func TestHandleCorrectRejectsInjectionInSideFields(t *testing.T) {
 	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='correct'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("rejected correction must not be persisted, found %d events", n)
+	}
+}
+
+// TestAutoTasteAfterMCPPrefer: the server never reaches storage.Close, so
+// the flushed() wrapper must re-render TASTE.md right after a write tool.
+func TestAutoTasteAfterMCPPrefer(t *testing.T) {
+	memStore(t)
+	home := t.TempDir()
+	t.Setenv("PALATE_HOME", home)
+	h := flushed(handlePrefer)
+	res, _, err := h(context.Background(), nil, StatementInput{Statement: "use table-driven tests"})
+	if err != nil || res.IsError {
+		t.Fatalf("handlePrefer: err=%v res=%+v", err, res)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "TASTE.md"))
+	if err != nil {
+		t.Fatalf("TASTE.md not written after an MCP write tool: %v", err)
+	}
+	if !strings.Contains(string(b), "use table-driven tests") || !strings.Contains(string(b), "(explicit_prefer, STATED)") {
+		t.Fatalf("unexpected TASTE.md content:\n%s", b)
 	}
 }

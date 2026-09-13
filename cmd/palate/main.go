@@ -45,10 +45,20 @@ func loadConfig() config.Config {
 		cfgFile = "config.yaml"
 	}
 	cfg, _ := config.Load(cfgFile)
+	render.RegisterAuto(cfg)
 	return cfg
 }
 
+// modeName is the one-word mode shown by init and doctor.
+func modeName(cfg config.Config) string {
+	if cfg.Legacy() {
+		return "legacy-repo"
+	}
+	return "global"
+}
+
 func openDB(cfg config.Config) *sql.DB {
+	_ = cfg.EnsureLayout()
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open db: %v\n", err)
@@ -111,16 +121,20 @@ func main() {
 func cmdInit() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Initialize .palate directory and database",
+		Short: "Initialize the Palate home (DB, state/, backups/, config.yaml)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			if err := cfg.EnsureLayout(); err != nil {
+				return err
+			}
 			db, err := storage.Open(cfg.DBPath)
 			if err != nil {
 				return err
 			}
 			_ = db
 			storage.Close()
-			fmt.Println("palate initialized at", cfg.DBPath)
+			fmt.Printf("palate initialized: home %s (%s)\n", cfg.Home, modeName(cfg))
+			fmt.Println("db:", cfg.DBPath)
 			return nil
 		},
 	}
@@ -134,7 +148,17 @@ func cmdDoctor() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			fmt.Printf("config: %s\n", cfgFile)
+			fmt.Printf("home: %s  mode: %s\n", cfg.Home, modeName(cfg))
+			if cfg.Legacy() {
+				fmt.Println("home: legacy per-repo layout — migrate into the global home with: palate push && (cd ~ && palate pull " + filepath.Join(filepath.Dir(cfg.Home), "TASTE.md") + ")")
+			}
 			fmt.Printf("db: %s\n", cfg.DBPath)
+			fmt.Printf("taste: %s (auto-render %s)\n", cfg.TastePath(), map[bool]string{true: "on", false: "off"}[cfg.Render.Auto])
+			if bak := storage.NewestBackup(cfg.BackupDir()); bak != "" {
+				fmt.Printf("backup: newest %s\n", bak)
+			} else {
+				fmt.Printf("backup: none yet (written before forget/pull into %s)\n", cfg.BackupDir())
+			}
 			fmt.Printf("c_floor: %.2f half_life: %.0fh\n", cfg.CFloor, cfg.HalfLifeHours)
 			// Diagnose only: never create the database as a side effect.
 			if _, statErr := os.Stat(cfg.DBPath); os.IsNotExist(statErr) {
@@ -370,6 +394,11 @@ func cmdForget() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
+			if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "forget"); err != nil {
+				return fmt.Errorf("backup before forget: %w", err)
+			} else if bak != "" {
+				fmt.Fprintln(os.Stderr, "backup:", bak)
+			}
 			if err := storage.Forget(db, args[0]); err != nil {
 				return err
 			}
@@ -406,18 +435,18 @@ func cmdExport() *cobra.Command {
 
 func cmdLint() *cobra.Command {
 	return &cobra.Command{
-		Use:   "lint [TASTE.md]",
-		Short: "Lint TASTE.md (lossy artifact check; ok = no drift from DB)",
+		Use:   "lint [path]",
+		Short: "Lint TASTE.md (default: the auto-maintained file in the Palate home)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := "TASTE.md"
+			path := loadConfig().TastePath()
 			if len(args) > 0 {
 				path = args[0]
 			}
 			if _, err := os.Stat(path); os.IsNotExist(err) {
-				fmt.Fprintln(os.Stderr, "lint: no TASTE.md on disk")
-				fmt.Fprintln(os.Stderr, "lint: render one from DB: palate push   (or: palate export --out TASTE.md)")
-				fmt.Fprintln(os.Stderr, "lint: note: TASTE.md is a LOSS-ONLY render; events log in .palate/*.db is the source of truth")
+				fmt.Fprintf(os.Stderr, "lint: no TASTE.md at %s\n", path)
+				fmt.Fprintln(os.Stderr, "lint: it is written automatically after the first learned preference; for a git-shareable copy run: palate push")
+				fmt.Fprintln(os.Stderr, "lint: note: TASTE.md is a render; the events log in palate.db is the source of truth")
 				return nil
 			}
 			diags := render.Lint(path)
@@ -481,6 +510,11 @@ func cmdPull() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
+			if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "pull"); err != nil {
+				return fmt.Errorf("backup before pull: %w", err)
+			} else if bak != "" {
+				fmt.Fprintln(os.Stderr, "backup:", bak)
+			}
 			n, err := render.Reimport(db, "TASTE.md")
 			if err != nil {
 				fmt.Println("pull: git pull first, then reimport —", err)
@@ -695,6 +729,7 @@ func cmdHook() *cobra.Command {
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
 			cfg := loadConfig()
+			_ = cfg.EnsureLayout()
 			db, err := storage.Open(cfg.DBPath)
 			if err != nil {
 				return nil
@@ -787,8 +822,9 @@ func cmdHook() *cobra.Command {
 			if err != nil {
 				return nil
 			}
-			statePath := filepath.Join(".palate", "model_edits.json")
-			_ = os.MkdirAll(".palate", 0700)
+			cfg := loadConfig()
+			_ = cfg.EnsureLayout()
+			statePath := cfg.StatePath("model_edits.json")
 			state := loadModelEdits(statePath)
 			state[fp] = newModelEdit(b)
 			if err := saveModelEdits(statePath, state); err != nil {
@@ -813,7 +849,7 @@ func cmdHook() *cobra.Command {
 				} `json:"files"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
-			statePath := filepath.Join(".palate", "model_edits.json")
+			statePath := cfg.StatePath("model_edits.json")
 			modelEdits := loadModelEdits(statePath)
 			if len(input.Files) > 0 {
 				// Explicit files[] payload (scripted callers).
@@ -858,8 +894,7 @@ func cmdHook() *cobra.Command {
 			db := openDB(cfg)
 			defer storage.Close()
 			block, _ := prewarm.SessionPrewarm(db, cfg)
-			path := filepath.Join(".palate", "recovery.md")
-			_ = os.MkdirAll(".palate", 0700)
+			path := cfg.StatePath("recovery.md")
 			_ = os.WriteFile(path, []byte(block.Content), 0600)
 			return nil
 		},
@@ -1072,7 +1107,7 @@ func newModelEdit(b []byte) modelEdit {
 // and UserPromptSubmit — the two moments where drift since the last Stop can
 // only be the user's own hand-edit.
 func handleStateWalkUserDiffs(db *sql.DB, cfg config.Config) {
-	statePath := filepath.Join(".palate", "model_edits.json")
+	statePath := cfg.StatePath("model_edits.json")
 	modelEdits := loadModelEdits(statePath)
 	changed := false
 	for fp, rec := range modelEdits {
@@ -1216,8 +1251,7 @@ func cmdSkill() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cwd, _ := os.Getwd()
-			if err := skills.WriteCandidates(cwd, cands); err != nil {
+			if err := skills.WriteCandidates(cfg, cands); err != nil {
 				return err
 			}
 			for _, cand := range cands {
@@ -1232,9 +1266,7 @@ func cmdSkill() *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use: "list", Short: "List skill candidates",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, _ := os.Getwd()
-			dir := filepath.Join(cwd, ".palate", "skill-candidates")
-			entries, _ := os.ReadDir(dir)
+			entries, _ := os.ReadDir(loadConfig().SkillCandidatesDir())
 			if len(entries) == 0 {
 				fmt.Println("no candidates")
 				return nil
@@ -1249,8 +1281,7 @@ func cmdSkill() *cobra.Command {
 		Use: "install [id]", Short: "Install a candidate (inert until installed)",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, _ := os.Getwd()
-			if err := skills.InstallCandidate(cwd, args[0]); err != nil {
+			if err := skills.InstallCandidate(loadConfig(), args[0]); err != nil {
 				return err
 			}
 			fmt.Println("installed", args[0])
@@ -1271,17 +1302,17 @@ func cmdSkill() *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use: "stats [id]", Short: "Show or bump effectiveness stats",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, _ := os.Getwd()
+			cfg := loadConfig()
 			if len(args) == 0 {
-				m := skills.LoadStats(cwd)
+				m := skills.LoadStats(cfg)
 				b, _ := json.MarshalIndent(m, "", "  ")
 				fmt.Println(string(b))
-				for _, issue := range skills.Monitors(cwd) {
+				for _, issue := range skills.Monitors(cfg) {
 					fmt.Fprintln(os.Stderr, "monitor:", issue)
 				}
 				return nil
 			}
-			if err := skills.BumpStat(cwd, args[0], true); err != nil {
+			if err := skills.BumpStat(cfg, args[0], true); err != nil {
 				return err
 			}
 			fmt.Println("bumped", args[0])
@@ -1325,8 +1356,9 @@ const noLLMConfiguredMsg = "palate: no LLM configured (PALATE_LLM_ENDPOINT/PALAT
 // learnLockPath returns the path every `learn` subcommand serializes on so
 // two overlapping runs (e.g. a Stop-triggered detach firing while another
 // is mid-flight) never write concurrently.
-func learnLockPath() string {
-	return filepath.Join(".palate", "learn.lock")
+func learnLockPath(cfg config.Config) string {
+	_ = cfg.EnsureLayout()
+	return cfg.StatePath("learn.lock")
 }
 
 func cmdLearnSession() *cobra.Command {
@@ -1362,7 +1394,7 @@ func cmdLearnSession() *cobra.Command {
 
 			db := openDB(cfg)
 			defer storage.Close()
-			release, ok := distill.AcquireLearnLock(learnLockPath())
+			release, ok := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !ok {
 				if verbose {
 					fmt.Println("palate: learn already in progress — skipping")
@@ -1417,7 +1449,7 @@ func cmdLearnSessions() *cobra.Command {
 
 			db := openDB(cfg)
 			defer storage.Close()
-			release, ok := distill.AcquireLearnLock(learnLockPath())
+			release, ok := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !ok {
 				return nil
 			}
@@ -1467,7 +1499,7 @@ func cmdLearnJournals() *cobra.Command {
 
 			db := openDB(cfg)
 			defer storage.Close()
-			release, ok := distill.AcquireLearnLock(learnLockPath())
+			release, ok := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !ok {
 				return nil
 			}
@@ -1519,7 +1551,7 @@ func cmdLearnRepo() *cobra.Command {
 
 			db := openDB(cfg)
 			defer storage.Close()
-			release, ok := distill.AcquireLearnLock(learnLockPath())
+			release, ok := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !ok {
 				if verbose {
 					fmt.Println("palate: learn already in progress — skipping")

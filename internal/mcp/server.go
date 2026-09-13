@@ -13,12 +13,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/learn"
+	"github.com/thinhkhuat/palate/internal/render"
 	"github.com/thinhkhuat/palate/internal/safety"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.1.2"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.2.0"}, nil)
 	registerTools(s)
 	return s
 }
@@ -51,15 +52,26 @@ type ForgetInput struct {
 	ID string `json:"id" jsonschema:"id of the memory or preference to delete, as printed by palate_recall"`
 }
 
+// flushed wraps a write tool so TASTE.md is re-rendered right after the
+// call: the server is long-lived and never reaches storage.Close, which is
+// where every other process flushes.
+func flushed[In any](h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, interface{}, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, interface{}, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, interface{}, error) {
+		res, out, err := h(ctx, req, in)
+		storage.FlushIfDirty()
+		return res, out, err
+	}
+}
+
 func registerTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_recall", Description: "Recall preferences and memories matching a query"}, handleRecall)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_remember", Description: "Store a memory"}, handleRemember)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_correct", Description: "Record a correction: tried, wrong_because, fix, trigger_context"}, handleCorrect)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_prefer", Description: "Record an explicit preference"}, handlePrefer)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_reject", Description: "Record an explicit rejection"}, handleReject)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_accept", Description: "Record an explicit acceptance"}, handleAccept)
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_remember", Description: "Store a memory"}, flushed(handleRemember))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_correct", Description: "Record a correction: tried, wrong_because, fix, trigger_context"}, flushed(handleCorrect))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_prefer", Description: "Record an explicit preference"}, flushed(handlePrefer))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_reject", Description: "Record an explicit rejection"}, flushed(handleReject))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_accept", Description: "Record an explicit acceptance"}, flushed(handleAccept))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_stats", Description: "Show capture and storage stats"}, handleStats)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory or preference by id"}, handleForget)
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory or preference by id"}, flushed(handleForget))
 }
 
 func textResult(msg string) *mcp.CallToolResult {
@@ -73,10 +85,14 @@ func errResult(msg string) *mcp.CallToolResult {
 // openStore loads config and opens the DB, returning a tool error instead of a
 // nil db when either fails.
 func openStore() (config.Config, *sql.DB, *mcp.CallToolResult) {
-	cfg, err := config.Load("config.yaml")
+	// Same resolver as the CLI (config.Resolve): the MCP server and the
+	// hooks must never disagree on which store they talk to.
+	cfg, err := config.Resolve("")
 	if err != nil {
 		return cfg, nil, errResult(fmt.Sprintf("config error: %v", err))
 	}
+	_ = cfg.EnsureLayout()
+	render.RegisterAuto(cfg)
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {
 		return cfg, nil, errResult(fmt.Sprintf("db error: %v", err))

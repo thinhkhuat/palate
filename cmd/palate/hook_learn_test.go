@@ -3,12 +3,10 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
@@ -103,7 +101,7 @@ func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 	// Stop re-baselines: the recorded hash now matches the bytes on disk, and
 	// the snapshot is the current content, so the same drift cannot be
 	// credited to the user later.
-	state := loadModelEdits(filepath.Join(".palate", "model_edits.json"))
+	state := loadModelEdits(loadConfig().StatePath("model_edits.json"))
 	disk, _ := os.ReadFile("watched.txt")
 	if rec, ok := state["watched.txt"]; !ok || rec.Hash != fileHash(disk) || rec.Snapshot != string(disk) {
 		t.Fatalf("Stop must re-baseline the snapshot to disk, got %+v", state)
@@ -127,8 +125,9 @@ func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 // predate the current bytes of watched.txt — the shape a hand-edit leaves.
 func writeStaleSnapshot(t *testing.T) {
 	t.Helper()
-	if err := os.MkdirAll(".palate", 0o700); err != nil {
-		t.Fatalf("mkdir .palate: %v", err)
+	cfg := loadConfig()
+	if err := os.MkdirAll(cfg.StateDir(), 0o700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
 	}
 	if err := os.WriteFile("watched.txt", []byte("line one\nline two\n"), 0o644); err != nil {
 		t.Fatalf("write watched.txt: %v", err)
@@ -138,7 +137,7 @@ func writeStaleSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal model_edits: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".palate", "model_edits.json"), b, 0o600); err != nil {
+	if err := os.WriteFile(cfg.StatePath("model_edits.json"), b, 0o600); err != nil {
 		t.Fatalf("write model_edits.json: %v", err)
 	}
 }
@@ -195,7 +194,7 @@ func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 	// Regression: with no LLM configured, the same shaped diff still stores
 	// a preference exactly as it did before this phase.
 	setupTempProject(t)
-	unconfiguredCfg := config.Config{DBPath: ".palate/palate.db"}
+	unconfiguredCfg := loadConfig()
 	db2 := openDB(unconfiguredCfg)
 	if err := os.WriteFile("watched.txt", []byte("line one\nline two\n"), 0o644); err != nil {
 		t.Fatalf("write watched.txt: %v", err)

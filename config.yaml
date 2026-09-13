@@ -1,4 +1,7 @@
-db_path: .palate/palate.db
+# home: the durable Palate home. Default ~/.claude/palate (override with PALATE_HOME);
+# a repo that already carries ./.palate/palate.db stays in legacy per-repo mode.
+# home: ~/.claude/palate
+# db_path: defaults to <home>/palate.db; set only to move the DB file itself (PALATE_DB_PATH overrides)
 c_floor: 0.1
 half_life_hours: 168
 learning_rate: 0.3
@@ -36,3 +39,5 @@ mcp:
   allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
 distill:
   mode: auto   # auto | review
+render:
+  auto: true   # keep <home>/TASTE.md current after every write (PALATE_RENDER_AUTO=0 to disable)

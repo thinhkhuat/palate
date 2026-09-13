@@ -1,13 +1,31 @@
 package config
 
 import (
+	_ "embed"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+// seedYAML is the shipped config, copied once into a fresh global home so the
+// user has a commented file to edit (seed-if-missing, never overwritten).
+//
+//go:embed seed.yaml
+var seedYAML []byte
+
+// legacyDir is the per-repo layout Palate used before the durable home: a
+// repo that already carries legacyDir/palate.db keeps that layout unchanged.
+const legacyDir = ".palate"
+
 type Config struct {
+	// Home is the durable home every path Palate owns resolves under. Set by
+	// ResolveHome: PALATE_HOME > `home:` in ./config.yaml > an existing
+	// ./.palate/palate.db (legacy repo mode) > ~/.claude/palate.
+	Home              string       `yaml:"home"`
+	legacy            bool         // set by Resolve when Home came from legacy detection
 	DBPath            string       `yaml:"db_path"`
 	CFloor            float64      `yaml:"c_floor"`
 	HalfLifeHours     float64      `yaml:"half_life_hours"`
@@ -20,6 +38,13 @@ type Config struct {
 	MCP               MCP          `yaml:"mcp"`
 	LLM               LLM
 	Distill           Distill `yaml:"distill"`
+	Render            Render  `yaml:"render"`
+}
+
+// Render controls the auto-maintained TASTE.md. Auto is on unless the user
+// turns it off in config.yaml or with PALATE_RENDER_AUTO=0.
+type Render struct {
+	Auto bool `yaml:"auto"`
 }
 
 type Weights struct {
@@ -120,25 +145,145 @@ func Default() Config {
 			Allowlist: []string{"127.0.0.1", "localhost", "::1", "ip6-localhost"},
 		},
 		Distill: Distill{Mode: "auto"},
+		Render:  Render{Auto: true},
 	}
 }
 
-func Load(path string) (Config, error) {
+// DefaultHome is the canonical durable home shared by every harness
+// (Claude Code, Codex, Command Code, ZCode all read the same store) — the
+// same placement skill-concierge uses (~/.claude/skill-concierge).
+func DefaultHome() string {
+	h, err := os.UserHomeDir()
+	if err != nil || h == "" {
+		return filepath.Join(".", legacyDir)
+	}
+	return filepath.Join(h, ".claude", "palate")
+}
+
+// ResolveHome is the one place the home is decided. yamlHome is the `home:`
+// value read from ./config.yaml ("" when absent). Precedence: PALATE_HOME >
+// yamlHome > legacy detection (./.palate/palate.db exists) > DefaultHome.
+// A relative value is made absolute against the cwd once, here, so hooks that
+// run later with a different cwd still address the same directory.
+func ResolveHome(yamlHome string) (home string, legacy bool) {
+	if v := os.Getenv("PALATE_HOME"); v != "" {
+		return absHome(v), false
+	}
+	if yamlHome != "" {
+		return absHome(yamlHome), false
+	}
+	if _, err := os.Stat(filepath.Join(legacyDir, "palate.db")); err == nil {
+		return absHome(legacyDir), true
+	}
+	return DefaultHome(), false
+}
+
+func absHome(p string) string {
+	// Only the current user's "~" / "~/x" forms; "~other/x" is left alone.
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			p = h + p[1:]
+		}
+	}
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
+}
+
+// Legacy reports the per-repo layout (Home is the cwd's .palate, chosen by
+// detection, not by the user).
+func (c Config) Legacy() bool { return c.legacy }
+
+// StateDir holds hook state (model_edits.json, recovery.md, learn.lock):
+// <home>/state in global mode, the home itself in legacy mode (where 0.1.x
+// left it).
+func (c Config) StateDir() string {
+	if c.Legacy() {
+		return c.Home
+	}
+	return filepath.Join(c.Home, "state")
+}
+
+func (c Config) StatePath(name string) string { return filepath.Join(c.StateDir(), name) }
+func (c Config) TastePath() string            { return filepath.Join(c.Home, "TASTE.md") }
+func (c Config) BackupDir() string            { return filepath.Join(c.Home, "backups") }
+func (c Config) SkillsDir() string            { return filepath.Join(c.Home, "skills") }
+func (c Config) SkillCandidatesDir() string   { return filepath.Join(c.Home, "skill-candidates") }
+func (c Config) HomeConfigPath() string       { return filepath.Join(c.Home, "config.yaml") }
+
+// EnsureLayout creates the home, its state and backups dirs (0700) and, in
+// global mode, seeds config.yaml from the shipped default when absent. It
+// never overwrites anything. Idempotent and cheap; every DB open calls it.
+func (c Config) EnsureLayout() error {
+	for _, d := range []string{c.Home, c.StateDir(), c.BackupDir()} {
+		if err := os.MkdirAll(d, 0700); err != nil {
+			return err
+		}
+	}
+	if c.Legacy() {
+		return nil
+	}
+	if _, err := os.Stat(c.HomeConfigPath()); os.IsNotExist(err) {
+		return os.WriteFile(c.HomeConfigPath(), seedYAML, 0600)
+	}
+	return nil
+}
+
+// Resolve loads the effective config: `explicit` (the --config flag, or
+// "config.yaml" meaning ./config.yaml) first; when that file is absent and
+// the home is not the legacy layout, <home>/config.yaml; then defaults. The
+// home is resolved through ResolveHome and the DB path is derived from it
+// unless the user set db_path / PALATE_DB_PATH themselves. Both the CLI and
+// the MCP server go through here so they can never disagree on the store.
+func Resolve(explicit string) (Config, error) {
+	if explicit == "" {
+		explicit = "config.yaml"
+	}
+	cfg, found, err := loadFile(explicit)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Home, cfg.legacy = ResolveHome(cfg.Home)
+	if !found && !cfg.legacy {
+		if hc, hfound, herr := loadFile(cfg.HomeConfigPath()); herr == nil && hfound {
+			home := cfg.Home
+			cfg = hc
+			cfg.Home = home
+		}
+	}
+	if cfg.DBPath == Default().DBPath {
+		cfg.DBPath = filepath.Join(cfg.Home, "palate.db")
+	}
+	applyEnv(&cfg)
+	// An explicit relative db_path (yaml or PALATE_DB_PATH) is anchored to the
+	// cwd once, here, for the same reason the home is: hooks and the detached
+	// distiller must address the same file whatever their cwd.
+	if cfg.DBPath != ":memory:" {
+		cfg.DBPath = absHome(cfg.DBPath)
+	}
+	return cfg, nil
+}
+
+// loadFile reads one YAML file over Default() without touching env or the
+// home; found reports whether the file existed.
+func loadFile(path string) (Config, bool, error) {
 	cfg := Default()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			applyEnv(&cfg)
-			return cfg, nil
+			return cfg, false, nil
 		}
-		return cfg, err
+		return cfg, false, err
 	}
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return cfg, err
+		return cfg, true, err
 	}
-	applyEnv(&cfg)
-	return cfg, nil
+	return cfg, true, nil
 }
+
+// Load is Resolve for callers that hold an explicit config path.
+func Load(path string) (Config, error) { return Resolve(path) }
 
 func applyEnv(c *Config) {
 	if v := os.Getenv("PALATE_DB_PATH"); v != "" {
@@ -162,6 +307,11 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("PALATE_LLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v
+	}
+	if v := os.Getenv("PALATE_RENDER_AUTO"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Render.Auto = b
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/thinhkhuat/palate/internal/config"
 	"os"
 	"path/filepath"
 	"sort"
@@ -81,8 +82,11 @@ func renderSkill(category string, stmts []string) string {
 	return b.String()
 }
 
-func WriteCandidates(dir string, cands []Candidate) error {
-	outDir := filepath.Join(dir, ".palate", "skill-candidates")
+// Every helper below resolves its paths through the config so the layout
+// (skill-candidates/, skills/, skill-stats.json under the Palate home) is
+// defined in exactly one place.
+func WriteCandidates(cfg config.Config, cands []Candidate) error {
+	outDir := cfg.SkillCandidatesDir()
 	if err := os.MkdirAll(outDir, 0750); err != nil {
 		return err
 	}
@@ -99,13 +103,13 @@ func WriteCandidates(dir string, cands []Candidate) error {
 	return nil
 }
 
-func InstallCandidate(dir, id string) error {
-	src := filepath.Join(dir, ".palate", "skill-candidates", id+".md")
+func InstallCandidate(cfg config.Config, id string) error {
+	src := filepath.Join(cfg.SkillCandidatesDir(), id+".md")
 	b, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("candidate not found: %w", err)
 	}
-	destDir := filepath.Join(dir, ".palate", "skills", id)
+	destDir := filepath.Join(cfg.SkillsDir(), id)
 	if err := os.MkdirAll(destDir, 0750); err != nil {
 		return err
 	}
@@ -113,17 +117,17 @@ func InstallCandidate(dir, id string) error {
 }
 
 type Effectiveness struct {
-	SkillID  string `json:"skill_id"`
-	Uses     int    `json:"uses"`
-	Success  int    `json:"success"`
+	SkillID   string `json:"skill_id"`
+	Uses      int    `json:"uses"`
+	Success   int    `json:"success"`
 	UpdatedAt string `json:"updated_at"`
 }
 
-func StatsPath(dir string) string { return filepath.Join(dir, ".palate", "skill-stats.json") }
+func StatsPath(cfg config.Config) string { return filepath.Join(cfg.Home, "skill-stats.json") }
 
-func LoadStats(dir string) map[string]*Effectiveness {
+func LoadStats(cfg config.Config) map[string]*Effectiveness {
 	m := map[string]*Effectiveness{}
-	b, err := os.ReadFile(StatsPath(dir))
+	b, err := os.ReadFile(StatsPath(cfg))
 	if err != nil {
 		return m
 	}
@@ -131,9 +135,9 @@ func LoadStats(dir string) map[string]*Effectiveness {
 	return m
 }
 
-func BumpStat(dir, skillID string, success bool) error {
-	_ = os.MkdirAll(filepath.Join(dir, ".palate"), 0750)
-	m := LoadStats(dir)
+func BumpStat(cfg config.Config, skillID string, success bool) error {
+	_ = os.MkdirAll(cfg.Home, 0700)
+	m := LoadStats(cfg)
 	e, ok := m[skillID]
 	if !ok {
 		e = &Effectiveness{SkillID: skillID}
@@ -145,11 +149,11 @@ func BumpStat(dir, skillID string, success bool) error {
 	}
 	e.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	b, _ := json.MarshalIndent(m, "", "  ")
-	return os.WriteFile(StatsPath(dir), b, 0644)
+	return os.WriteFile(StatsPath(cfg), b, 0644)
 }
 
-func Monitors(dir string) []string {
-	m := LoadStats(dir)
+func Monitors(cfg config.Config) []string {
+	m := LoadStats(cfg)
 	var issues []string
 	for id, e := range m {
 		if e.Uses >= 10 && float64(e.Success)/float64(e.Uses) < 0.3 {

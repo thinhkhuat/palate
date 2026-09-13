@@ -16,6 +16,23 @@ BIN="$WORK/palate-verify"
 
 unset PALATE_LLM_ENDPOINT PALATE_LLM_MODEL PALATE_LLM_API_KEY 2>/dev/null || true
 
+# Both store layouts are exercised, and neither may touch the developer's
+# real ~/.claude/palate: "global" pins an isolated home per form through
+# PALATE_HOME (the same override a user would set); "legacy" plants the
+# ./.palate/palate.db marker so detection keeps the per-repo layout.
+unset PALATE_HOME 2>/dev/null || true
+prep_dir() {  # prep_dir <dir> <mode>
+  if [ "$2" = "legacy" ]; then
+    mkdir -p "$1/.palate" && : > "$1/.palate/palate.db"
+    (cd "$1" && "$BIN" init >/dev/null)
+  else
+    (cd "$1" && PALATE_HOME="$1/home" "$BIN" init >/dev/null)
+  fi
+}
+home_env() {  # home_env <dir> <mode> — prints the env assignment for that form
+  if [ "$2" = "global" ]; then printf 'PALATE_HOME=%s/home' "$1"; else printf 'PALATE_HOME='; fi
+}
+
 # Extract every hook command from hooks/hooks.json with node -e (not jq),
 # one "<Event>\t<command>" line per hook entry.
 extract_hooks() {
@@ -73,13 +90,14 @@ cli_event_for() {
 }
 
 status=0
+for MODE in global legacy; do
 extract_hooks | while IFS="$(printf '\t')" read -r event cmd; do
   slug="$(cli_event_for "$event")"
 
   WA="$(mktemp -d)"
   WB="$(mktemp -d)"
-  (cd "$WA" && "$BIN" init >/dev/null)
-  (cd "$WB" && "$BIN" init >/dev/null)
+  prep_dir "$WA" "$MODE"
+  prep_dir "$WB" "$MODE"
 
   if [ "$slug" = "post-tool-use" ]; then
     printf 'x' > "$WA/calc.go"
@@ -104,24 +122,34 @@ extract_hooks | while IFS="$(printf '\t')" read -r event cmd; do
     export CLAUDE_PLUGIN_ROOT
     PALATE_BIN="$BIN"
     export PALATE_BIN
+    export "$(home_env "$WA" "$MODE")"
     printf '%s' "$payloadA" | sh -c "$cmd"
   ) > "$outA"
 
   # Form B: the direct CLI call the launcher must be indistinguishable from.
-  (cd "$WB" && printf '%s' "$payloadB" | "$BIN" hook "$slug") > "$outB"
+  (cd "$WB" && export "$(home_env "$WB" "$MODE")" && printf '%s' "$payloadB" | "$BIN" hook "$slug") > "$outB"
 
   if ! cmp -s "$outA" "$outB"; then
-    echo "DRIFT on $event ($slug):" >&2
+    echo "DRIFT on $event ($slug) [$MODE]:" >&2
     diff -u "$outB" "$outA" >&2 || true
     rm -rf "$WA" "$WB"
     exit 1
   fi
+  # the store must be where the mode says, and nowhere else
+  if [ "$MODE" = "global" ]; then
+    [ -e "$WA/.palate" ] && { echo "global mode wrote $WA/.palate" >&2; exit 1; }
+    [ -f "$WA/home/palate.db" ] || { echo "global mode: no DB under PALATE_HOME" >&2; exit 1; }
+  else
+    [ -d "$WA/home" ] && { echo "legacy mode created a home dir" >&2; exit 1; }
+    [ -f "$WA/.palate/palate.db" ] || { echo "legacy mode lost .palate/palate.db" >&2; exit 1; }
+  fi
   rm -rf "$WA" "$WB"
 done || status=1
+done
 
 if [ "$status" -ne 0 ]; then
   echo "verify-plugin-hooks: FAILED" >&2
   exit 1
 fi
 
-echo "verify-plugin-hooks: all hooks.json commands byte-match direct CLI calls"
+echo "verify-plugin-hooks: all hooks.json commands byte-match direct CLI calls (global + legacy store layouts)"
