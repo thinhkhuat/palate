@@ -349,8 +349,13 @@ func BackupBefore(dbPath, backupDir, label string) (string, error) {
 		return "", err
 	}
 	dst := filepath.Join(backupDir, fmt.Sprintf("%s-%s-%s", filepath.Base(dbPath), time.Now().Format("20060102-1504"), label))
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Minute-stamped: a second call in the same minute (a loop of forget /
+	// promote) must keep the FIRST snapshot — that is the state to restore.
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
+		if os.IsExist(err) {
+			return dst, nil
+		}
 		return "", err
 	}
 	if _, err := io.Copy(out, src); err != nil {

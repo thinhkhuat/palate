@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"os"
 	"path/filepath"
 	"testing"
@@ -219,14 +220,35 @@ func TestEnsureLayoutSeedsConfigOnce(t *testing.T) {
 
 // TestSeedMatchesDefaults pins the embedded seed.yaml to Default() so the
 // two cannot drift apart silently.
+// The seed is a fully commented template: as shipped it pins nothing (so a
+// home seeded by an old version still follows new defaults), and every value
+// it documents equals Default() once uncommented.
 func TestSeedMatchesDefaults(t *testing.T) {
-	var fromSeed Config
-	if err := yamlUnmarshal(seedYAML, &fromSeed); err != nil {
+	var asShipped Config
+	if err := yamlUnmarshal(seedYAML, &asShipped); err != nil {
 		t.Fatalf("seed.yaml does not parse: %v", err)
+	}
+	if asShipped.CFloor != 0 || asShipped.HalfLifeHours != 0 || asShipped.TokenBudgets.PrewarmSession != 0 || asShipped.Weights != (Weights{}) {
+		t.Fatalf("seed.yaml must not set any knob as shipped, got %+v", asShipped)
+	}
+	var uncommented []string
+	for _, line := range strings.Split(string(seedYAML), "\n") {
+		trim := strings.TrimLeft(line, " ")
+		indent := line[:len(line)-len(trim)]
+		// "# key: value" → "key: value"; prose comments ("# Palate home …") stay comments.
+		if strings.HasPrefix(trim, "# ") && strings.Contains(trim, ":") && !strings.Contains(strings.SplitN(trim[2:], ":", 2)[0], " ") {
+			uncommented = append(uncommented, indent+trim[2:])
+			continue
+		}
+		uncommented = append(uncommented, line)
+	}
+	var fromSeed Config
+	if err := yamlUnmarshal([]byte(strings.Join(uncommented, "\n")), &fromSeed); err != nil {
+		t.Fatalf("uncommented seed does not parse: %v\n%s", err, strings.Join(uncommented, "\n"))
 	}
 	d := Default()
 	if fromSeed.CFloor != d.CFloor || fromSeed.HalfLifeHours != d.HalfLifeHours || fromSeed.Weights != d.Weights || fromSeed.TokenBudgets != d.TokenBudgets || fromSeed.Hybrid != d.Hybrid || fromSeed.Distill != d.Distill {
-		t.Fatalf("seed.yaml drifted from Default():\nseed=%+v\ndef =%+v", fromSeed, d)
+		t.Fatalf("seed.yaml (uncommented) drifted from Default():\nseed=%+v\ndef =%+v", fromSeed, d)
 	}
 }
 

@@ -1,47 +1,52 @@
-# home: the durable Palate home. Default ~/.claude/palate (override with PALATE_HOME);
+# Palate home config — every knob below is commented out on purpose: a key you leave
+# unset follows the binary's current default, so an upgrade that changes a default
+# (0.4.0 turned time decay off and raised the prewarm budget) reaches you. Uncomment a
+# line only to pin a value. Env overrides (PALATE_*) beat this file.
+
+# home — the durable Palate home. Default ~/.claude/palate (override with PALATE_HOME);
 # a repo that already carries ./.palate/palate.db stays in legacy per-repo mode.
 # home: ~/.claude/palate
-# db_path: defaults to <home>/palate.db; set only to move the DB file itself (PALATE_DB_PATH overrides)
-c_floor: 0.1
-half_life_hours: 0     # 0 = no time decay (default); e.g. 168 to halve untouched confidence weekly
-learning_rate: 0.3
-weights:
-  explicit_correction: 1.0
-  user_diff: 0.6
-  explicit_reject: 0.9
-  stated_preference: 0.8
-  explicit_prefer: 0.8
-  explicit_accept: 0.6
-  model_edit: 0.4
-  imported: 0.4
-token_budgets:
-  prewarm_session: 2000   # whole profile at SessionStart; lines are only ever dropped whole
-  prewarm_goal: 200
-  recall: 1000
-  index_lines: 200
-  index_bytes: 25600
-freshness:
-  enabled: false
-  t1_days: 30
-  t1_weight: 1.0
-  t2_days: 90
-  t2_weight: 0.5
-  t3_weight: 0.25
-  compress_chars: 300
-hybrid:
-  vec: 0.5
-  fts: 0.3
-  importance: 0.2
-  rrf_k: 60
-taxonomy_threshold: 5
-mcp:
-  token_env: PALATE_MCP_TOKEN
-  allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
-distill:
-  mode: auto   # auto | review
-render:
-  auto: true   # keep <home>/TASTE.md current after every write (PALATE_RENDER_AUTO=0 to disable)
-judge:
-  enabled: true   # with a gateway configured, the model judges every explicit write (PALATE_JUDGE=0 falls back to heuristics)
-consolidate:
-  every_events: 25   # SessionStart auto-fires `palate consolidate` this many events after the last pass (0 = never; PALATE_CONSOLIDATE_EVERY)
+# db_path — defaults to <home>/palate.db; set only to move the DB file itself (PALATE_DB_PATH overrides)
+# c_floor: 0.1
+# half_life_hours: 0     # 0 = no time decay (default); e.g. 168 to halve untouched confidence weekly
+# learning_rate: 0.3
+# weights:
+  # explicit_correction: 1.0
+  # user_diff: 0.6
+  # explicit_reject: 0.9
+  # stated_preference: 0.8
+  # explicit_prefer: 0.8
+  # explicit_accept: 0.6
+  # model_edit: 0.4
+  # imported: 0.4
+# token_budgets:
+  # prewarm_session: 2000   # whole profile at SessionStart; lines are only ever dropped whole
+  # prewarm_goal: 200
+  # recall: 1000
+  # index_lines: 200
+  # index_bytes: 25600
+# freshness:
+  # enabled: false
+  # t1_days: 30
+  # t1_weight: 1.0
+  # t2_days: 90
+  # t2_weight: 0.5
+  # t3_weight: 0.25
+  # compress_chars: 300
+# hybrid:
+  # vec: 0.5
+  # fts: 0.3
+  # importance: 0.2
+  # rrf_k: 60
+# taxonomy_threshold: 5
+# mcp:
+  # token_env: PALATE_MCP_TOKEN
+  # allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
+# distill:
+  # mode: auto   # auto | review
+# render:
+  # auto: true   # keep <home>/TASTE.md current after every write (PALATE_RENDER_AUTO=0 to disable)
+# judge:
+  # enabled: true   # with a gateway configured, the model judges every explicit write (PALATE_JUDGE=0 falls back to heuristics)
+# consolidate:
+  # every_events: 25   # SessionStart auto-fires `palate consolidate` this many events after the last pass (0 = never; PALATE_CONSOLIDATE_EVERY)

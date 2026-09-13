@@ -6,7 +6,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 
 | Path | Command | When to use |
 |------|---------|-------------|
-| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.4.0` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
+| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.4.1` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
 | From source | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ and git access to the private repo |
 | Agent (no prompt) | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest && palate init && palate doctor` | CI / agent bootstrap — single shot, no TTY |
 
@@ -14,7 +14,7 @@ Verify:
 
 ```sh
 palate --help
-palate init     # creates the home (~/.claude/palate) and the DB; doctor never creates it as a side effect
+palate init     # creates the home (~/.claude/palate), the DB and a commented config.yaml (unset keys follow the binary defaults); doctor never creates it as a side effect
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
 
@@ -31,7 +31,7 @@ cat ~/.claude/palate/TASTE.md              # the human-readable profile, kept cu
 **Where everything lives — one durable home, every harness.** Palate keeps a single machine-wide store at
 `~/.claude/palate/` (the same placement skill-concierge uses), shared by Claude Code, Codex, Command Code and
 ZCode: `palate.db` (the events log — the source of truth), `TASTE.md` (auto-maintained render), `config.yaml`
-(seeded once from the shipped default, never overwritten), `state/` (hook snapshots, recovery block, distiller
+(seeded once as a fully commented template, never overwritten — unset keys follow the binary's current defaults, so upgrades reach you), `state/` (hook snapshots, recovery block, distiller
 lock), `skills/`, `skill-candidates/`, `backups/`. Override the location with `PALATE_HOME=<dir>` (or `home:` in
 a repo-local `config.yaml`). `palate doctor` prints `home: … mode: global`.
 

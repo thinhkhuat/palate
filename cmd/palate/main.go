@@ -1439,6 +1439,16 @@ func cmdPromote() *cobra.Command {
 			}
 			var source string
 			_ = db.QueryRow(`SELECT source FROM proposals WHERE id=?`, args[0]).Scan(&source)
+			if source == "consolidate" {
+				// A consolidation action rewrites, merges or retires live rows:
+				// the same destructive class as forget/pull, so it gets the
+				// same backup (once per process, however many are promoted).
+				if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "promote"); err != nil {
+					return err
+				} else if bak != "" {
+					fmt.Fprintln(os.Stderr, "backup:", bak)
+				}
+			}
 			_, err := learn.PromoteProposal(db, args[0], as, cfg, func(sig learn.Signal) error {
 				if source == "consolidate" {
 					// the proposal's content is the stored action, not a statement
@@ -1450,7 +1460,11 @@ func cmdPromote() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println("promoted", args[0], "as", as)
+			if source == "consolidate" {
+				fmt.Println("applied consolidation", args[0])
+			} else {
+				fmt.Println("promoted", args[0], "as", as)
+			}
 			return nil
 		},
 	}
