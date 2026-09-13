@@ -2,6 +2,7 @@ package prewarm
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/thinhkhuat/palate/internal/config"
@@ -64,4 +65,48 @@ func TestDeduperIsolated(t *testing.T) {
 	if _, fired, _ := a.GoalPrewarm(db, cfg, prompt); fired {
 		t.Fatalf("same deduper should suppress repeats")
 	}
+}
+
+func TestPrewarmMarksDistilled(t *testing.T) {
+	db, cfg := openMem(t)
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{
+		Type:      learn.SignalLLMDistilled,
+		Statement: "Prefers table-driven tests.",
+		Category:  "Testing",
+		Weight:    0.9,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{
+		Type:      learn.SignalExplicitPrefer,
+		Statement: "use early returns over nested ifs",
+		Category:  "Error Handling",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := SessionPrewarm(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(block.Content, "Prefers table-driven tests.") {
+		t.Fatalf("prewarm content missing the distilled statement: %q", block.Content)
+	}
+	distilledLine := lineContaining(block.Content, "Prefers table-driven tests.")
+	if !strings.Contains(distilledLine, ", distilled)") {
+		t.Fatalf("distilled row missing marker: %q", distilledLine)
+	}
+	statedLine := lineContaining(block.Content, "use early returns over nested ifs")
+	if strings.Contains(statedLine, "distilled") {
+		t.Fatalf("STATED row must not carry the distilled marker: %q", statedLine)
+	}
+}
+
+func lineContaining(content, substr string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
 }

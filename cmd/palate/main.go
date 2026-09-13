@@ -1,19 +1,23 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/thinhkhuat/palate/internal/adapters"
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/distill"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/mcp"
 	"github.com/thinhkhuat/palate/internal/prewarm"
@@ -25,6 +29,16 @@ import (
 )
 
 var cfgFile string
+
+// version is set at release time via GoReleaser's ldflags
+// (-X main.version={{.Version}}, .goreleaser.yaml:10); it stays "dev" for
+// go run/go test and any build that doesn't pass the flag.
+var version = "dev"
+
+// spawnLearnSession is a seam over distill.SpawnLearnSession so hook tests
+// can swap in a spy instead of starting a real child process; the
+// production path leaves it pointed at the real function.
+var spawnLearnSession = distill.SpawnLearnSession
 
 func loadConfig() config.Config {
 	if cfgFile == "" {
@@ -83,6 +97,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cmdSkill())
 	root.AddCommand(cmdUpdate())
 	root.AddCommand(cmdReindex())
+	root.AddCommand(cmdLearn())
+	root.AddCommand(cmdVersion())
 	return root
 }
 
@@ -210,7 +226,7 @@ func cmdRecall() *cobra.Command {
 					return fmt.Errorf("bad --as-of %q: want RFC3339 (e.g. 2026-09-01T00:00:00Z): %w", asOf, err)
 				}
 				asOfTime = &t
-				fmt.Fprintf(os.Stderr, "note: --as-of %s pins decay replay to that instant (Phase 5 as_of determinism)\n", asOf)
+				fmt.Fprintf(os.Stderr, "note: --as-of %s pins decay replay to that instant\n", asOf)
 			}
 			results, err := storage.RecallFull(db, q, limit, includeConflicted, asOfTime, storage.RecallOptions{
 				CFloor:        cfg.CFloor,
@@ -660,6 +676,9 @@ func cmdHook() *cobra.Command {
 				}
 				fmt.Printf("%-14s %-32s %s\n", r.name+":", status, r.path)
 			}
+			if pluginHooksInstalled() && rows[0].count > 0 {
+				fmt.Println(pluginDoubleFireWarning)
+			}
 			return nil
 		},
 	})
@@ -670,7 +689,11 @@ func cmdHook() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Best-effort by contract: a capture hook must never break the
 			// session, so errors degrade to empty output (exit 0).
-			_, _ = io.ReadAll(os.Stdin)
+			var input struct {
+				SessionID      string `json:"session_id"`
+				TranscriptPath string `json:"transcript_path"`
+			}
+			_ = json.NewDecoder(os.Stdin).Decode(&input)
 			cfg := loadConfig()
 			db, err := storage.Open(cfg.DBPath)
 			if err != nil {
@@ -678,6 +701,11 @@ func cmdHook() *cobra.Command {
 			}
 			defer storage.Close()
 			handleStateWalkUserDiffs(db, cfg)
+			if cfg.LLMConfigured() && input.TranscriptPath != "" {
+				// Detached, fire-and-forget: this must never make the hook
+				// wait on the distiller's LLM call.
+				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
+			}
 			block, err := prewarm.SessionPrewarm(db, cfg)
 			if err != nil || block.Content == "" {
 				return nil
@@ -704,14 +732,20 @@ func cmdHook() *cobra.Command {
 				Prompt string `json:"prompt"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
-			// Scan the whole prompt, not the extracted clause: the trigger regex
-			// starts at "prefer", which would strip an injection prefix and
-			// launder the payload into a trusted STATED preference.
-			if stmt, cat := learn.ExtractStatedPreference(input.Prompt); stmt != "" {
-				if safety.Scan(input.Prompt).Flagged {
-					storage.BumpDrop(db, "stated_preference")
-				} else {
-					_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
+			// Superseded by the live session distiller when an LLM is
+			// configured: the same prompt text is already sitting in the
+			// transcript file the Stop hook is about to distill, so the
+			// regex/heuristic path stays off to avoid double-learning it.
+			if !cfg.LLMConfigured() {
+				// Scan the whole prompt, not the extracted clause: the trigger regex
+				// starts at "prefer", which would strip an injection prefix and
+				// launder the payload into a trusted STATED preference.
+				if stmt, cat := learn.ExtractStatedPreference(input.Prompt); stmt != "" {
+					if safety.Scan(input.Prompt).Flagged {
+						storage.BumpDrop(db, "stated_preference")
+					} else {
+						_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalStatedPreference, Statement: stmt, Category: cat}, nil)
+					}
 				}
 			}
 			if input.Prompt == "" {
@@ -773,8 +807,9 @@ func cmdHook() *cobra.Command {
 			db := openDB(cfg)
 			defer storage.Close()
 			var input struct {
-				SessionID string `json:"session_id"`
-				Files     []struct {
+				SessionID      string `json:"session_id"`
+				TranscriptPath string `json:"transcript_path"`
+				Files          []struct {
 					Path      string `json:"path"`
 					HashAfter string `json:"hash_after"`
 				} `json:"files"`
@@ -808,6 +843,11 @@ func cmdHook() *cobra.Command {
 				}
 			}
 			_ = saveModelEdits(statePath, modelEdits)
+			if cfg.LLMConfigured() && input.TranscriptPath != "" {
+				// Detached, fire-and-forget: this must never make the hook
+				// wait on the distiller's LLM call.
+				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
+			}
 			return nil
 		},
 	})
@@ -826,6 +866,34 @@ func cmdHook() *cobra.Command {
 		},
 	})
 	return c
+}
+
+// pluginDoubleFireWarning is printed by `hook help` when a plugin install and
+// a workspace-level install both appear wired: not authoritative — it only
+// names the definitive check, `claude plugin list`.
+const pluginDoubleFireWarning = `warning: palate hooks may be wired twice (plugin + workspace settings) — run "palate hook uninstall --harness claude_code" to remove the workspace copy`
+
+// pluginHooksInstalled reports whether a palate plugin cache directory
+// exists for Claude Code or Codex. It never keys off CLAUDE_PLUGIN_ROOT —
+// that env var is only ever set inside a hook's own process, never when a
+// human runs `hook help` interactively, so it would never fire there.
+// Detection is filesystem-based instead: a glob for the plugin cache layout
+// both harnesses use.
+func pluginHooksInstalled() bool {
+	home := mustHomeDir()
+	if home == "" {
+		return false
+	}
+	patterns := []string{
+		filepath.Join(home, ".claude", "plugins", "cache", "*", "palate", "*", "hooks", "hooks.json"),
+		filepath.Join(home, ".codex", "plugins", "cache", "*", "palate", "*", "hooks", "hooks.json"),
+	}
+	for _, pat := range patterns {
+		if matches, err := filepath.Glob(pat); err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHarnessList(list []string) (map[string]bool, error) {
@@ -948,6 +1016,14 @@ func applyUserDiffSignal(db *sql.DB, cfg config.Config, path, recordedHash, snap
 	}
 	if fileHash(b) == baseline {
 		return false
+	}
+	if cfg.LLMConfigured() {
+		// Superseded by the live session distiller (Stop hook, above): the
+		// same transcript this diff came from is about to be distilled into
+		// natural-language statements, so storing the raw added lines here
+		// would double-learn the same edit as both code and prose.
+		storage.BumpDrop(db, "user_diff")
+		return true
 	}
 	for _, sig := range learn.ExtractCandidates(snapshot, string(b)) {
 		sig.File = path
@@ -1187,6 +1263,395 @@ func cmdSkill() *cobra.Command {
 		},
 	})
 	return c
+}
+
+// maxTranscriptsPerHarness caps how many transcripts `learn sessions`
+// touches per reader unless --all is passed — a CLI default, not a
+// hardcoded constant deep in discovery/windowing logic, so it can be
+// lowered without touching either.
+const maxTranscriptsPerHarness = 20
+
+// capTranscripts sorts transcripts most-recently-modified first and,
+// unless all is set, truncates to maxTranscriptsPerHarness — the guard
+// against an unbounded scan of a harness's full corpus (thousands of files
+// in the worst case).
+func capTranscripts(transcripts []distill.Transcript, all bool) []distill.Transcript {
+	sort.Slice(transcripts, func(i, j int) bool { return transcripts[i].ModTime.After(transcripts[j].ModTime) })
+	if !all && len(transcripts) > maxTranscriptsPerHarness {
+		transcripts = transcripts[:maxTranscriptsPerHarness]
+	}
+	return transcripts
+}
+
+func cmdLearn() *cobra.Command {
+	c := &cobra.Command{Use: "learn", Short: "Learn preferences from transcripts via the LLM distiller"}
+	c.AddCommand(cmdLearnSession())
+	c.AddCommand(cmdLearnSessions())
+	c.AddCommand(cmdLearnJournals())
+	c.AddCommand(cmdLearnRepo())
+	return c
+}
+
+// noLLMConfiguredMsg is the single line every learn subcommand prints
+// (then exits 0) when PALATE_LLM_ENDPOINT/PALATE_LLM_MODEL are unset.
+const noLLMConfiguredMsg = "palate: no LLM configured (PALATE_LLM_ENDPOINT/PALATE_LLM_MODEL) — nothing learned"
+
+// learnLockPath returns the path every `learn` subcommand serializes on so
+// two overlapping runs (e.g. a Stop-triggered detach firing while another
+// is mid-flight) never write concurrently.
+func learnLockPath() string {
+	return filepath.Join(".palate", "learn.lock")
+}
+
+func cmdLearnSession() *cobra.Command {
+	var harness string
+	var verbose bool
+	c := &cobra.Command{
+		Use:   "session <path>",
+		Short: "Learn preferences from one transcript",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			if !cfg.LLMConfigured() {
+				fmt.Println(noLLMConfiguredMsg)
+				return nil
+			}
+
+			h := harness
+			if h == "" {
+				inferred, err := inferHarnessFromPath(args[0])
+				if err != nil {
+					return err
+				}
+				h = inferred
+			}
+			reader, err := readerByHarness(h)
+			if err != nil {
+				return err
+			}
+			path, err := filepath.Abs(args[0])
+			if err != nil {
+				path = args[0]
+			}
+
+			db := openDB(cfg)
+			defer storage.Close()
+			release, ok := distill.AcquireLearnLock(learnLockPath())
+			if !ok {
+				if verbose {
+					fmt.Println("palate: learn already in progress — skipping")
+				}
+				return nil
+			}
+			defer release()
+			gw, _ := distill.NewGatewayFromEnv(cfg)
+
+			summary, err := distill.LearnSession(context.Background(), db, cfg, gw, reader, distill.Transcript{Harness: h, Path: path})
+			if err != nil {
+				return err
+			}
+			printLearnOutcome(summary)
+			if verbose {
+				fmt.Println("gateway model:", cfg.LLM.Model)
+				if !summary.Skipped && !summary.Advanced {
+					fmt.Println("reason:", summary.Reason)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&harness, "harness", "", "harness override: claude_code|command_code|pi|codex|opencode|gemini_cli|memsearch|zcode")
+	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model and, on a non-advancing run, the reason")
+	return c
+}
+
+func cmdLearnSessions() *cobra.Command {
+	var harness, project string
+	var all, includeGlobal, includeExperimental bool
+	c := &cobra.Command{
+		Use:   "sessions",
+		Short: "Learn preferences across every registered reader's discovered transcripts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			if !cfg.LLMConfigured() {
+				fmt.Println(noLLMConfiguredMsg)
+				return nil
+			}
+
+			readers := distill.AllReaders()
+			if includeExperimental {
+				readers = append(readers, distill.ExperimentalReaders()...)
+			}
+			if harness != "" {
+				readers = readersForHarness(readers, harness)
+				if len(readers) == 0 {
+					return fmt.Errorf("unknown harness %q", harness)
+				}
+			}
+
+			db := openDB(cfg)
+			defer storage.Close()
+			release, ok := distill.AcquireLearnLock(learnLockPath())
+			if !ok {
+				return nil
+			}
+			defer release()
+			gw, _ := distill.NewGatewayFromEnv(cfg)
+
+			for _, reader := range readers {
+				transcripts, err := discoverForReader(reader, project, includeGlobal)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "palate: learn sessions: %s discover: %v\n", reader.Harness(), err)
+					continue
+				}
+				transcripts = capTranscripts(transcripts, all)
+				runLearnLoop(cmd.Context(), db, cfg, gw, reader, transcripts)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&harness, "harness", "", "limit to one harness")
+	c.Flags().StringVar(&project, "project", "", "limit to one project (claude_code/command_code/pi/codex/opencode only — see docs/adapters.md)")
+	c.Flags().BoolVar(&all, "all", false, "scan every discovered transcript, not just the 20 most-recently-modified per harness")
+	c.Flags().BoolVar(&includeGlobal, "include-global", false, "also learn from ~/.memsearch/memory/ (prints a notice first)")
+	c.Flags().BoolVar(&includeExperimental, "include-experimental", false, "also run the ZCode reader")
+	return c
+}
+
+func cmdLearnJournals() *cobra.Command {
+	var includeGlobal bool
+	c := &cobra.Command{
+		Use:   "journals",
+		Short: "Learn preferences from memsearch journals",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			if !cfg.LLMConfigured() {
+				fmt.Println(noLLMConfiguredMsg)
+				return nil
+			}
+
+			reader, err := readerByHarness("memsearch")
+			if err != nil {
+				return err
+			}
+			transcripts, err := discoverForReader(reader, "", includeGlobal)
+			if err != nil {
+				return err
+			}
+
+			db := openDB(cfg)
+			defer storage.Close()
+			release, ok := distill.AcquireLearnLock(learnLockPath())
+			if !ok {
+				return nil
+			}
+			defer release()
+			gw, _ := distill.NewGatewayFromEnv(cfg)
+			runLearnLoop(cmd.Context(), db, cfg, gw, reader, transcripts)
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&includeGlobal, "include-global", false, "also learn from ~/.memsearch/memory/ (prints a notice first)")
+	return c
+}
+
+func cmdLearnRepo() *cobra.Command {
+	var maxCommits, maxSignals int
+	var allAuthors, verbose bool
+	c := &cobra.Command{
+		Use:   "repo [path]",
+		Short: "Learn preferences from a git repository's commit history",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			if !cfg.LLMConfigured() {
+				fmt.Println(noLLMConfiguredMsg)
+				return nil
+			}
+			if _, err := exec.LookPath("git"); err != nil {
+				return fmt.Errorf("git not found in PATH")
+			}
+
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			repoPath, err := filepath.Abs(path)
+			if err != nil {
+				return fmt.Errorf("resolve path: %w", err)
+			}
+
+			author := ""
+			if !allAuthors {
+				email, err := distill.RepoAuthorEmail(repoPath)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "palate: learn repo: git user.email not set — learning from all authors")
+				} else {
+					author = email
+				}
+			}
+
+			db := openDB(cfg)
+			defer storage.Close()
+			release, ok := distill.AcquireLearnLock(learnLockPath())
+			if !ok {
+				if verbose {
+					fmt.Println("palate: learn already in progress — skipping")
+				}
+				return nil
+			}
+			defer release()
+			gw, _ := distill.NewGatewayFromEnv(cfg)
+
+			signalCount, summary, err := distill.LearnRepo(cmd.Context(), db, cfg, gw, repoPath, author, maxCommits, maxSignals)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%d signals -> %d preferences (%d applied, %d dropped)\n", signalCount, summary.Applied+summary.Dropped, summary.Applied, summary.Dropped)
+			if verbose {
+				fmt.Println("gateway model:", cfg.LLM.Model)
+				if !summary.Skipped && !summary.Advanced {
+					fmt.Println("reason:", summary.Reason)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().IntVar(&maxCommits, "max-commits", 200, "maximum commits to scan")
+	c.Flags().IntVar(&maxSignals, "max-signals", 50, "maximum before/after signals to extract")
+	c.Flags().BoolVar(&allAuthors, "all-authors", false, "learn from every commit author, not just git config user.email")
+	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model and, on a non-advancing run, the reason")
+	return c
+}
+
+// runLearnLoop applies LearnSession to every transcript in order, printing
+// one outcome line per transcript and continuing past a per-transcript
+// error rather than aborting the whole batch.
+func runLearnLoop(ctx context.Context, db *sql.DB, cfg config.Config, gw *distill.Gateway, reader distill.Reader, transcripts []distill.Transcript) {
+	for _, t := range transcripts {
+		summary, err := distill.LearnSession(ctx, db, cfg, gw, reader, t)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "palate: learn %s %s: %v\n", reader.Harness(), t.Path, err)
+			continue
+		}
+		fmt.Print(t.Path + ": ")
+		printLearnOutcome(summary)
+	}
+}
+
+func printLearnOutcome(s distill.Summary) {
+	if s.Skipped {
+		fmt.Println("0 preferences (0 applied, 0 dropped)")
+		return
+	}
+	fmt.Printf("%d preferences (%d applied, %d dropped)\n", s.Applied+s.Dropped, s.Applied, s.Dropped)
+}
+
+// readerByHarness returns the single reader (including experimental ones)
+// matching harness.
+func readerByHarness(harness string) (distill.Reader, error) {
+	all := append(distill.AllReaders(), distill.ExperimentalReaders()...)
+	for _, r := range all {
+		if r.Harness() == harness {
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("unknown harness %q", harness)
+}
+
+func readersForHarness(readers []distill.Reader, harness string) []distill.Reader {
+	for _, r := range readers {
+		if r.Harness() == harness {
+			return []distill.Reader{r}
+		}
+	}
+	return nil
+}
+
+// inferHarnessFromPath matches path against each reader's known transcript
+// root, returning the harness name; errors out naming the accepted values
+// when nothing matches (a fixture under testdata/, for example, must pass
+// --harness explicitly since it lives under none of these roots).
+func inferHarnessFromPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	home := mustHomeDir()
+	roots := []struct{ harness, root string }{
+		{"claude_code", filepath.Join(home, ".claude", "projects")},
+		{"command_code", filepath.Join(home, ".commandcode", "projects")},
+		{"pi", filepath.Join(home, ".pi", "agent", "sessions")},
+		{"codex", filepath.Join(home, ".codex", "sessions")},
+		{"gemini_cli", filepath.Join(home, ".gemini", "tmp")},
+		{"zcode", filepath.Join(home, ".zcode", "cli", "rollout")},
+	}
+	for _, r := range roots {
+		if r.root != "" && strings.HasPrefix(abs, r.root) {
+			return r.harness, nil
+		}
+	}
+	return "", fmt.Errorf("cannot infer harness from path %q; pass --harness (claude_code|command_code|pi|codex|opencode|gemini_cli|memsearch|zcode)", path)
+}
+
+func mustHomeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+// discoverForReader runs reader.Discover with the project/global-journal
+// policy the CLI layer owns: memsearch scans project-local by default and
+// only touches ~/.memsearch/memory/ (with a printed notice) when
+// includeGlobal is set; --project narrows Claude Code's own Discover root
+// directly (so it never lists another project's directory) and, for every
+// other reader whose format carries a Project label, filters post-hoc.
+func discoverForReader(reader distill.Reader, project string, includeGlobal bool) ([]distill.Transcript, error) {
+	if reader.Harness() == "memsearch" {
+		out, err := reader.Discover("")
+		if err != nil {
+			return nil, err
+		}
+		if includeGlobal {
+			globalDir := filepath.Join(mustHomeDir(), ".memsearch", "memory")
+			fmt.Println("including global memsearch journals:", globalDir)
+			g, err := reader.Discover(globalDir)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, g...)
+		}
+		return out, nil
+	}
+
+	root := ""
+	if project != "" && reader.Harness() == "claude_code" {
+		root = filepath.Join(mustHomeDir(), ".claude", "projects", strings.ReplaceAll(project, "/", "-"))
+	}
+	transcripts, err := reader.Discover(root)
+	if err != nil {
+		return nil, err
+	}
+	if project == "" || reader.Harness() == "claude_code" || reader.Harness() == "gemini_cli" {
+		return transcripts, nil
+	}
+	filtered := transcripts[:0]
+	for _, t := range transcripts {
+		if t.Project == project {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered, nil
+}
+
+func cmdVersion() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the palate version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("palate " + version)
+			return nil
+		},
+	}
 }
 
 func cmdUpdate() *cobra.Command {

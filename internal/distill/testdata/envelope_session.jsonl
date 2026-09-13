@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"fixture-session","timestamp":"2026-09-01T10:00:00.000Z","cwd":"/Users/testuser/project"}
+{"type":"custom","id":"c1","parentId":null,"timestamp":"2026-09-01T10:00:01.000Z","customType":"statusline/counters","data":{"turns":0}}
+{"type":"message","id":"m1","parentId":"c1","timestamp":"2026-09-01T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"prefers early returns over nested if statements"}]}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-09-01T10:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Noted — I'll favor early returns."},{"type":"tool_use","id":"call_1","name":"activate_skill","input":{"name":"consult"}}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-09-01T10:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"skill loaded"}]}]}}
+{"this line is not valid json
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-09-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Ready to continue."}]}}

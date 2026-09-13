@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/safety"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
 
@@ -99,6 +100,8 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 	w := cfg.WeightFor(string(sig.Type))
 	if sig.Type == SignalUserDiff {
 		w = cfg.Weights.UserDiff
+	} else if sig.Type == SignalLLMDistilled {
+		w = sig.Weight
 	}
 	existing, _ := findByStatement(conn, sig.Category, sig.Statement)
 	now := time.Now().UTC()
@@ -110,6 +113,9 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 	if existing == nil && sig.Category != "" {
 		existing, _ = findContradiction(conn, sig.Category, sig.Statement)
 	}
+	if existing == nil && sig.Category != "" && sig.Type == SignalLLMDistilled {
+		existing, _ = findNearDuplicate(conn, sig.Category, sig.Statement)
+	}
 
 	if existing != nil {
 		dh := deltaHours(existing.LastReinforcedAt, asOf)
@@ -118,10 +124,10 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 			c = Weaken(c, w, cfg.LearningRate, cfg.CFloor)
 			if c <= cfg.CFloor+1e-9 {
 				_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1, valid_until=? WHERE id=?`, c, nowStr, nowStr, existing.ID)
-				_ = storage.AppendEvent(conn, "weaken_close", fmt.Sprintf(`{"id":%q,"c":%f}`, existing.ID, c))
+				_ = storage.AppendEvent(conn, "weaken_close", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f}`, existing.ID, c), sig.Evidence))
 			} else {
 				_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1 WHERE id=?`, c, nowStr, existing.ID)
-				_ = storage.AppendEvent(conn, "weaken", fmt.Sprintf(`{"id":%q,"c":%f}`, existing.ID, c))
+				_ = storage.AppendEvent(conn, "weaken", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f}`, existing.ID, c), sig.Evidence))
 			}
 			_ = insertConflict(conn, existing.ID, sig.Statement, w, cfg, nowStr)
 			return existing, nil
@@ -132,7 +138,7 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 		if err != nil {
 			return nil, err
 		}
-		_ = storage.AppendEvent(conn, "reinforce", fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, existing.ID, c, sig.Type))
+		_ = storage.AppendEvent(conn, "reinforce", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, existing.ID, c, sig.Type), sig.Evidence))
 		existing.Confidence = c
 		return existing, nil
 	}
@@ -141,11 +147,18 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 		sig.Category = InferCategoryFromStatement(sig.Statement)
 	}
 	conf := InitialConfidence(w, cfg.CFloor)
+	if sig.Type == SignalLLMDistilled {
+		// A distilled statement seeds at the model's own confidence (capped so a
+		// single pass can never look certain); reinforcement still governs growth.
+		conf = distilledSeed(w, cfg.CFloor)
+	}
 	id := newID()
 	prov, _ := json.Marshal([]string{string(sig.Type)})
 	trustTier := "STATED"
 	if sig.Type == SignalImported {
 		trustTier = "IMPORTED"
+	} else if sig.Type == SignalLLMDistilled {
+		trustTier = "DISTILLED"
 	}
 	_, err := conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, valid_from, created_at, last_reinforced_at, reinforcement_count, trust_tier, veracity)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -153,8 +166,21 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	_ = storage.AppendEvent(conn, "create", fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, id, conf, sig.Type))
+	_ = storage.AppendEvent(conn, "create", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, id, conf, sig.Type), sig.Evidence))
 	return &Preference{ID: id, Category: sig.Category, Statement: sig.Statement, Confidence: conf, TrustTier: trustTier}, nil
+}
+
+// withEvidence inserts a censored "evidence" field into a JSON object
+// payload built with fmt.Sprintf, just before its closing brace. Evidence
+// is censored a second time here (already censored once before it reached
+// the gateway) since this call site is the last stop before it lands in
+// the events table.
+func withEvidence(payload, evidence string) string {
+	if evidence == "" {
+		return payload
+	}
+	b, _ := json.Marshal(safety.Censor(evidence))
+	return strings.TrimSuffix(payload, "}") + `,"evidence":` + string(b) + "}"
 }
 
 func findByStatement(conn *sql.DB, category, statement string) (*Preference, error) {
@@ -300,6 +326,69 @@ func findContradiction(conn *sql.DB, category, statement string) (*Preference, e
 	return nil, sql.ErrNoRows
 }
 
+// nearDuplicateThreshold is the token-set Jaccard similarity, over
+// hyphen-split/lowercase/punctuation-stripped/stop-word-stripped tokens, at
+// or above which a restated llm_distilled statement reinforces an existing
+// preference instead of inserting a near-twin. Tuned against the plan's own
+// canonical pair ("Prefers table-driven tests." vs "Prefer table driven
+// tests in Go") which measures 0.75 under this tokenizer — 0.8 does not
+// clear it.
+const nearDuplicateThreshold = 0.7
+
+// findNearDuplicate scans live preferences in the same category for one
+// whose token set is Jaccard-similar enough to statement to be the same
+// preference restated differently. It reuses normalizeStatement and
+// significantWords but hyphen-splits first — only here, never in the
+// shared helpers isContradiction also depends on — so "table-driven" and
+// "table driven" tokenize the same way.
+func findNearDuplicate(conn *sql.DB, category, statement string) (*Preference, error) {
+	target := nearDupWords(statement)
+	if len(target) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	rows, err := conn.Query(`SELECT id, category, statement, confidence, importance, source, provenance, valid_from, valid_until, created_at, last_reinforced_at, reinforcement_count, owner, trust_tier, veracity
+		FROM preferences WHERE category=? AND valid_until IS NULL`, category)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p Preference
+		var validUntil sql.NullString
+		if err := rows.Scan(&p.ID, &p.Category, &p.Statement, &p.Confidence, &p.Importance, &p.Source, &p.Provenance, &p.ValidFrom, &validUntil, &p.CreatedAt, &p.LastReinforcedAt, &p.ReinforcementCount, &p.Owner, &p.TrustTier, &p.Veracity); err != nil {
+			continue
+		}
+		if jaccard(target, nearDupWords(p.Statement)) >= nearDuplicateThreshold {
+			if validUntil.Valid {
+				p.ValidUntil = &validUntil.String
+			}
+			return &p, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+func nearDupWords(s string) map[string]bool {
+	return significantWords(strings.ReplaceAll(normalizeStatement(s), "-", " "))
+}
+
+func jaccard(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	inter := 0
+	for w := range a {
+		if b[w] {
+			inter++
+		}
+	}
+	union := len(a) + len(b) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
 func insertConflict(conn *sql.DB, existingID, newStatement string, w float64, cfg config.Config, nowStr string) error {
 	conf := InitialConfidence(w, cfg.CFloor)
 	cat := InferCategoryFromStatement(newStatement)
@@ -357,4 +446,18 @@ func newID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%d-%x", time.Now().UnixNano(), b)
+}
+
+// distilledSeedCap bounds the confidence a distilled statement can start
+// with, whatever the model claimed.
+const distilledSeedCap = 0.9
+
+func distilledSeed(w, cFloor float64) float64 {
+	switch {
+	case w < cFloor:
+		return cFloor
+	case w > distilledSeedCap:
+		return distilledSeedCap
+	}
+	return w
 }

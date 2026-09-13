@@ -16,6 +16,7 @@ var ScenariosV1 = []Scenario{
 	{ID: "S004", Category: "Types", Description: "Explicit prefer: interfaces over concrete types", SignalType: "explicit_prefer", Prompt: "I prefer small interfaces over concrete types in function signatures", Expected: "small interfaces"},
 	{ID: "S005", Category: "General", Description: "Quiet convention: early returns", SignalType: "stated_preference", Prompt: "Use early returns instead of nested ifs", Expected: "early returns"},
 	{ID: "S006", Category: "Imports", Description: "Buried decision: stdlib first in import blocks", SignalType: "user_diff", Prompt: "User reordered imports to put stdlib first", Expected: "stdlib first"},
+	{ID: "S007", Category: "Testing", Description: "LLM-distilled: table-driven tests from transcript evidence", SignalType: "llm_distilled", Prompt: "Session transcript: always use table-driven tests for Go", Expected: "table-driven"},
 }
 
 const ScenariosVersion = "v1"

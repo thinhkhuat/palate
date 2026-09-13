@@ -52,7 +52,11 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 		if trustTier.Valid && trustTier.String == "IMPORTED" {
 			badge = " [IMPORTED]"
 		}
-		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)%s", cat, stmt, conf, badge))
+		marker := ""
+		if trustTier.Valid && trustTier.String == "DISTILLED" {
+			marker = ", distilled"
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f%s)%s", cat, stmt, conf, marker, badge))
 	}
 	if len(lines) == 0 {
 		return Block{Content: "", Tokens: 0, Scope: "session"}, nil

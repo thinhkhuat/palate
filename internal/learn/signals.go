@@ -16,6 +16,7 @@ const (
 	SignalExplicitAccept     SignalType = "explicit_accept"
 	SignalModelEdit          SignalType = "model_edit"
 	SignalImported           SignalType = "imported"
+	SignalLLMDistilled       SignalType = "llm_distilled"
 )
 
 var Weights = map[SignalType]float64{
@@ -37,6 +38,13 @@ type Signal struct {
 	Before         string     `json:"before,omitempty"`
 	After          string     `json:"after,omitempty"`
 	TriggerContext string     `json:"trigger_context,omitempty"`
+	// Weight is the per-statement confidence seed used only by
+	// SignalLLMDistilled; every other signal type gets its weight from
+	// cfg.WeightFor instead.
+	Weight float64 `json:"weight,omitempty"`
+	// Evidence is the short quote/paraphrase backing a distilled statement.
+	// It flows into the events log, never into the stored statement.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 var statedPrefRe = regexp.MustCompile(`(?i)(?:i prefer|prefer|always use|never use|use \w+ (?:over|instead of)|my style is)[^.!?\n]*`)
@@ -133,11 +141,11 @@ func summarizeDiff(before, after string) string {
 	if len(added) == 0 {
 		return ""
 	}
-	return truncateRunes("prefers: "+strings.Join(added, " / "), maxStatementRunes)
+	return TruncateRunes("prefers: "+strings.Join(added, " / "), maxStatementRunes)
 }
 
-// truncateRunes cuts on rune boundaries and appends an ellipsis when it cut.
-func truncateRunes(s string, max int) string {
+// TruncateRunes cuts on rune boundaries and appends an ellipsis when it cut.
+func TruncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s

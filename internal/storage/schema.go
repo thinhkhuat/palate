@@ -168,6 +168,14 @@ func initSchema(conn *sql.DB) error {
 			drops INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 		)`,
+		`CREATE TABLE IF NOT EXISTS learn_cursors (
+			source TEXT NOT NULL,
+			key TEXT NOT NULL,
+			position TEXT NOT NULL DEFAULT '',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			PRIMARY KEY (source, key)
+		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_working USING fts5(content, content='working_memory', content_rowid='rowid', tokenize='porter unicode61')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_episodic USING fts5(content, content='episodic_memory', content_rowid='rowid', tokenize='porter unicode61')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS fts_preferences USING fts5(statement, category, content='preferences', content_rowid='rowid', tokenize='porter unicode61')`,

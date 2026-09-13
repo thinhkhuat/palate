@@ -1,0 +1,8 @@
+{"type":"user","cwd":"/Users/testuser/project","message":{"role":"user","content":"always use table-driven tests for this project"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","text":"The user wants table-driven tests, noting that for later."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Got it — I'll write table-driven tests going forward."}]}}
+{"type":"user","cwd":"/Users/testuser/project","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"exit code 0"}]}]}}
+{"type":"user","cwd":"/Users/testuser/project","message":{"role":"user","content":"<system-reminder>\nAs you answer the user's questions, you can use the following context:\nThis is a reminder block that must never be learned from.\n</system-reminder>"}}
+{"this is not valid json at all
+{"type":"user","cwd":"/Users/testuser/project","message":{"role":"user","content":"don't use interface{}, use any instead"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Understood — I'll use any instead of interface{} from now on."}]}}

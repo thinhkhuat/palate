@@ -1,0 +1,3 @@
+{"sessionId":"fixture","projectHash":"abc123","startTime":"2026-09-01T10:00:00.000Z","lastUpdated":"2026-09-01T10:00:00.000Z","kind":"main"}
+{"$set":{"messages":[{"id":"m1","timestamp":"2026-09-01T10:00:01.000Z","type":"user","content":[{"text":"stale message that must be superseded"}]}]}}
+{"$set":{"messages":[{"id":"m1","timestamp":"2026-09-01T10:00:01.000Z","type":"user","content":[{"text":"prefers concise commit messages"}]},{"id":"m2","timestamp":"2026-09-01T10:00:02.000Z","type":"model","content":[{"text":"noted"}]}]}}

@@ -34,3 +34,5 @@ taxonomy_threshold: 5
 mcp:
   token_env: PALATE_MCP_TOKEN
   allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
+distill:
+  mode: auto   # auto | review

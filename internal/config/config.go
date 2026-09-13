@@ -8,16 +8,18 @@ import (
 )
 
 type Config struct {
-	DBPath            string             `yaml:"db_path"`
-	CFloor            float64            `yaml:"c_floor"`
-	HalfLifeHours     float64            `yaml:"half_life_hours"`
-	LearningRate      float64            `yaml:"learning_rate"`
-	Weights           Weights            `yaml:"weights"`
-	TokenBudgets      TokenBudgets       `yaml:"token_budgets"`
-	Freshness         Freshness          `yaml:"freshness"`
-	Hybrid            Hybrid             `yaml:"hybrid"`
-	TaxonomyThreshold int                `yaml:"taxonomy_threshold"`
-	MCP               MCP                `yaml:"mcp"`
+	DBPath            string       `yaml:"db_path"`
+	CFloor            float64      `yaml:"c_floor"`
+	HalfLifeHours     float64      `yaml:"half_life_hours"`
+	LearningRate      float64      `yaml:"learning_rate"`
+	Weights           Weights      `yaml:"weights"`
+	TokenBudgets      TokenBudgets `yaml:"token_budgets"`
+	Freshness         Freshness    `yaml:"freshness"`
+	Hybrid            Hybrid       `yaml:"hybrid"`
+	TaxonomyThreshold int          `yaml:"taxonomy_threshold"`
+	MCP               MCP          `yaml:"mcp"`
+	LLM               LLM
+	Distill           Distill `yaml:"distill"`
 }
 
 type Weights struct {
@@ -59,6 +61,19 @@ type Hybrid struct {
 type MCP struct {
 	TokenEnv  string   `yaml:"token_env"`
 	Allowlist []string `yaml:"allowlist"`
+}
+
+// LLM holds the chat-completion gateway settings. It carries no yaml tag: it
+// is populated exclusively from PALATE_LLM_* env vars in applyEnv, never
+// from config.yaml.
+type LLM struct {
+	Endpoint string
+	Model    string
+	APIKey   string
+}
+
+type Distill struct {
+	Mode string `yaml:"mode"`
 }
 
 func Default() Config {
@@ -104,6 +119,7 @@ func Default() Config {
 			TokenEnv:  "PALATE_MCP_TOKEN",
 			Allowlist: []string{"127.0.0.1", "localhost", "::1", "ip6-localhost"},
 		},
+		Distill: Distill{Mode: "auto"},
 	}
 }
 
@@ -138,6 +154,21 @@ func applyEnv(c *Config) {
 			c.HalfLifeHours = f
 		}
 	}
+	if v := os.Getenv("PALATE_LLM_ENDPOINT"); v != "" {
+		c.LLM.Endpoint = v
+	}
+	if v := os.Getenv("PALATE_LLM_MODEL"); v != "" {
+		c.LLM.Model = v
+	}
+	if v := os.Getenv("PALATE_LLM_API_KEY"); v != "" {
+		c.LLM.APIKey = v
+	}
+}
+
+// LLMConfigured reports whether enough of PALATE_LLM_* is set to attempt a
+// gateway call. The API key is optional (some gateways need none).
+func (c Config) LLMConfigured() bool {
+	return c.LLM.Endpoint != "" && c.LLM.Model != ""
 }
 
 func (c Config) WeightFor(signal string) float64 {
