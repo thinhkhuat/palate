@@ -86,3 +86,45 @@ func TestWriteCommandCodeHooksMergesAndPreserves(t *testing.T) {
 	dir := t.TempDir()
 	checkTopLevelMergePreserves(t, dir, filepath.Join(dir, ".commandcode", "settings.local.json"), WriteCommandCodeHooks, 5)
 }
+
+// Uninstall removes only palate's entries: a foreign hook on the same event,
+// a foreign event, and unrelated top-level keys all survive byte-for-byte in
+// value, and the file is left valid JSON.
+func TestUninstallPreservesForeignClaudeCode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"permissions":{"allow":["Bash(go test:*)"]},"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo foreign"}]}],"Notification":[{"hooks":[{"type":"command","command":"say hi"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteClaudeCodeHooks(dir, "/usr/local/bin/palate"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := CountPalateHooksTopLevel(path); got != 5 {
+		t.Fatalf("after install: palate hooks = %d, want 5", got)
+	}
+	removed, err := RemoveClaudeCodeHooks(dir)
+	if err != nil || removed != 5 {
+		t.Fatalf("uninstall: removed=%d err=%v, want 5", removed, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("settings not valid JSON after uninstall: %v", err)
+	}
+	if got := CountPalateHooksTopLevel(path); got != 0 {
+		t.Fatalf("after uninstall: palate hooks = %d, want 0", got)
+	}
+	s := string(raw)
+	for _, want := range []string{`"echo foreign"`, `"say hi"`, `"Bash(go test:*)"`, `"Notification"`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("uninstall dropped foreign content %s:\n%s", want, s)
+		}
+	}
+}

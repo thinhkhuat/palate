@@ -1,0 +1,10 @@
+{
+  "_comment": "Codex never expands ${CLAUDE_PLUGIN_ROOT} in MCP command/args (upstream openai/codex#35762 — hooks expand it, mcpServers leave it literal), so the shared .mcp.json's command is unresolvable here. Codex's native replacement is a relative cwd: 'cwd: .' resolves to the installed plugin root, making a relative command portable across versioned cache dirs. bin/palate self-locates via $0, so a relative spawn is safe. Keep this in lockstep with .mcp.json — internal/adapters.TestMCPDescriptorsParity fails the build on drift.",
+  "mcpServers": {
+    "palate": {
+      "command": "./bin/palate",
+      "args": ["serve"],
+      "cwd": "."
+    }
+  }
+}

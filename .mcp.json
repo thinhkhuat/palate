@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "palate": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate",
+      "args": ["serve"]
+    }
+  }
+}

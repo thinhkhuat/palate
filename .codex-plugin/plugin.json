@@ -1,0 +1,19 @@
+{
+  "name": "palate",
+  "version": "0.1.0",
+  "description": "Open taste engine — learns coding style from observable signals (edits, corrections, LLM-distilled transcripts) and pushes it back into your AI harness.",
+  "author": { "name": "thinhkhuat" },
+  "license": "MIT",
+  "keywords": ["taste", "learning", "codex", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "Palate",
+    "shortDescription": "Learns your coding taste from observable signals",
+    "longDescription": "Open taste engine — decays/reinforces preferences from edits, corrections, explicit statements, and (when an LLM gateway is configured) distilled session/git-history evidence, pushed back via prewarm.",
+    "developerName": "thinhkhuat",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["What have you learned about my taste?", "Run the taste distiller on this project's history"]
+  }
+}

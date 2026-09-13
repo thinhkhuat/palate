@@ -1,0 +1,8 @@
+{
+  "name": "palate",
+  "version": "0.1.0",
+  "description": "Open taste engine — learns coding style from observable signals (edits, corrections, LLM-distilled transcripts) and pushes it back into your AI harness.",
+  "author": { "name": "thinhkhuat" },
+  "license": "MIT",
+  "keywords": ["taste", "learning", "preferences", "claude-code", "codex", "mcp"]
+}

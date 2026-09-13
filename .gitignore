@@ -3,6 +3,7 @@
 .unlazy-hook-state.json
 dist/
 /palate
+.cache/
 *.db
 *.db-shm
 *.db-wal

@@ -1,0 +1,61 @@
+{
+  "description": "palate — SessionStart injects the current prewarm block (session-scope preferences, ~500 tok) and, cross-session, replays any model_edits.json state left from a prior run; when an LLM gateway is configured it also fires a detached, lock-guarded distiller pass over the just-closed transcript. UserPromptSubmit captures an \"I prefer …\" clause as a STATED preference (behind the same secret/injection scanner as the CLI) and, on an intent shift, injects a goal-scope prewarm block (~200 tok). PostToolUse (Edit|Write) snapshots the edited file (hash + 4KB bound) so a later hand-edit can be diffed. Stop diffs any snapshot against disk, learns the user_diff (w=0.6) if it changed, clears the snapshot, and — with an LLM gateway configured — fires the same detached distiller pass. PreCompact writes a recovery prewarm block to .palate/recovery.md. Every handler degrades to empty output on error; hooks never fail the session.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook post-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook pre-compact",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook user-prompt",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

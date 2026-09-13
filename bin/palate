@@ -1,0 +1,90 @@
+#!/bin/sh
+# palate — plugin launcher (POSIX sh; Codex's launch shell is not guaranteed
+# to be bash). Fail-open by contract: on any path that can't find or build a
+# binary, print one line to stderr and exit 0 rather than break the caller's
+# hook/MCP session.
+#
+# Resolution order:
+#   1. $PALATE_BIN — explicit override.
+#   2. a prebuilt per-platform binary staged at
+#      ${plugin_root}/bin/palate-<os>-<arch> (not shipped in git this phase —
+#      a future release step could populate these from GoReleaser assets).
+#   3. `command -v palate` — an existing install.sh/go install on PATH.
+#   4. a build-race-guarded `go build` from the plugin root into .cache/,
+#      when `go` exists. Every invocation reaching this branch tries to
+#      acquire ${plugin_root}/.cache/build.lock (mkdir is atomic — fails if
+#      the dir exists). The winner builds, then releases the lock; every
+#      loser polls for .cache/palate to appear (up to 30s) then uses it. A
+#      loser that times out, or a build that fails, falls through to step 5.
+#   5. one stderr line, exit 0.
+#
+# plugin_root resolves to $CLAUDE_PLUGIN_ROOT when set, else it self-locates
+# from $0 — every Codex MCP invocation, since .codex-plugin/mcp.json's
+# relative command + cwd:"." means Codex never sets that env var for the MCP
+# child. dirname(1) is deliberately avoided below (an external command,
+# unusable if PATH is empty) in favor of pure shell parameter expansion.
+set -eu
+
+plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$plugin_root" ]; then
+  script_dir="${0%/*}"
+  [ "$script_dir" = "$0" ] && script_dir="."
+  plugin_root="$(cd "$script_dir/.." && pwd)"
+fi
+
+# 1. explicit override
+if [ -n "${PALATE_BIN:-}" ] && [ -x "$PALATE_BIN" ]; then
+  exec "$PALATE_BIN" "$@"
+fi
+
+# 2. staged per-platform binary
+if command -v uname >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v sed >/dev/null 2>&1; then
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm64/arm64/')"
+  staged="$plugin_root/bin/palate-$os-$arch"
+  if [ -x "$staged" ]; then
+    exec "$staged" "$@"
+  fi
+fi
+
+# 3. an existing install
+if command -v palate >/dev/null 2>&1; then
+  exec palate "$@"
+fi
+
+# 4. build-race-guarded local build from the plugin root (it already is the
+# source tree, so a local build beats fetching a release tarball)
+if command -v go >/dev/null 2>&1; then
+  cache_dir="$plugin_root/.cache"
+  built="$cache_dir/palate"
+  lock="$cache_dir/build.lock"
+  mkdir -p "$cache_dir" 2>/dev/null || true
+  # a previous invocation already built it — skip the lock/build entirely
+  if [ -x "$built" ]; then
+    exec "$built" "$@"
+  fi
+  if mkdir "$lock" 2>/dev/null; then
+    # `exec` below replaces this process image, so it never runs a normal
+    # shell EXIT trap — release the lock explicitly on both paths instead.
+    if (cd "$plugin_root" && CGO_ENABLED=0 go build -o "$built" ./cmd/palate) 2>/dev/null; then
+      rmdir "$lock" 2>/dev/null || true
+      exec "$built" "$@"
+    fi
+    rmdir "$lock" 2>/dev/null || true
+    # build failed — fall through to step 5, same as a genuine build failure
+  else
+    waited=0
+    while [ ! -x "$built" ] && [ "$waited" -lt 30 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if [ -x "$built" ]; then
+      exec "$built" "$@"
+    fi
+    # timed out waiting on the winner — fall through to step 5
+  fi
+fi
+
+# 5. nothing found — fail open, never block the hook/MCP caller
+echo "palate: no binary found and go is not installed — see INSTALL.md" >&2
+exit 0
