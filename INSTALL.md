@@ -7,7 +7,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 | Path | Command | When to use |
 |------|---------|-------------|
 | Homebrew | `brew install thinhkhuat/palate/palate` | You have Homebrew + want upgrades via `brew upgrade` |
-| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.1.0` is published (real release SHA256s are filled by GoReleaser on publish) |
+| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.1.1` is published (real release SHA256s are filled by GoReleaser on publish) |
 | Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` | Any Unix with `curl` |
 | From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
 | Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
@@ -19,7 +19,7 @@ palate --help
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
 
-> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.1.0` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
+> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.1.1` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
 
 ## 1. First run (all harnesses)
 
