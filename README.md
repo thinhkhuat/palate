@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.1.2-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.2.0-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
@@ -16,7 +16,8 @@ Harness-native "taste" (like Command Code's closed one) works because the harnes
 - **Single Go binary. No CGO. SQLite-only.** `modernc.org/sqlite` + FTS5 + JSON+cosine (and `sqlite-vec` behind a build tag when you want it).
 - **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` (optional) — no invented `accept/reject` primitive.
 - **Push prewarm:** SessionStart ~500 tok once per session + UserPromptSubmit ~200 tok only when your *intent* changes. Honest budgets, disclosed.
-- **TASTE.md is a render, not the truth.** The `events` log in `.palate/*.db` is the source of truth; `TASTE.md` is a reviewable, git-shareable artifact.
+- **One durable home, every harness.** `~/.claude/palate/` (override `PALATE_HOME`) holds the store for Claude Code, Codex, Command Code and ZCode alike — same placement as skill-concierge. A repo that still has `./.palate/palate.db` keeps that legacy layout by detection.
+- **TASTE.md is a render, kept current — not the truth.** The `events` log in `palate.db` is the source of truth; `TASTE.md` beside it is re-rendered after every write (hooks, CLI, MCP, distiller), each line tagged with its source and trust tier, so you can review what Palate learned without opening SQLite. `palate push` exports a git-shareable copy into the repo.
 
 ---
 
@@ -113,13 +114,13 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 
 | Command | What it does |
 |---------|-------------|
-| `palate init` | Create `.palate/palate.db` (0700/0600, WAL) |
+| `palate init` | Create the Palate home (`~/.claude/palate/`: `palate.db` 0700/0600 WAL, `state/`, `backups/`, seeded `config.yaml`) |
 | `palate doctor` | Check sqlite, fts5, vector, 13 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
 | `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted`; `recall` prints the `id=` that `forget` takes, for memories and preferences alike |
 | `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
 | `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |
-| `palate lint / push / pull / reindex` | `TASTE.md` is lossy; `reindex` rebuilds FTS from DB |
+| `palate lint / push / pull / reindex` | `lint` checks the auto-maintained `TASTE.md`; `push` exports a git-shareable copy; `pull` reimports one (`IMPORTED w≤0.4`); `reindex` rebuilds FTS from DB |
 | `palate skill {cluster,list,install,ruminate,stats}` | Promotion + rumination |
 | `palate verify {capture,retrieval} --pure` | Blinded scenarios, `n` + `hash` + caveats (never a headline without them) |
 | `palate hook install [--harness H]` | Wire Claude Code + Command Code + ZCode hooks (idempotent; `--harness zcode-global` for `~/.zcode/cli/config.json`) |
@@ -156,7 +157,7 @@ Details: [`docs/security.md`](docs/security.md)
 go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
 
-Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.1.2` is actually published, use `brew install --HEAD` or `go install`.
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.2.0` is actually published, use `brew install --HEAD` or `go install`.
 
 ## License
 

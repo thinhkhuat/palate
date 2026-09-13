@@ -26,9 +26,10 @@ and the `palate_recall` MCP tool.
 
 ## When the user states a preference explicitly
 
-Do not hand-edit `.palate/` or `TASTE.md` — both are managed stores
-(`TASTE.md` is a lossy render of the DB, not the source of truth; editing it
-directly will be overwritten on the next `palate push`). Instead, call the
+Do not hand-edit the Palate home (`~/.claude/palate/`, or a legacy repo
+`.palate/`) or its `TASTE.md` — both are managed stores (`TASTE.md` is an
+auto-maintained render of the DB, not the source of truth; a hand edit is
+overwritten on the next write). Instead, call the
 matching MCP tool so the statement is captured with the right weight and
 survives decay/reinforcement:
 

@@ -7,7 +7,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 | Path | Command | When to use |
 |------|---------|-------------|
 | Homebrew | `brew install thinhkhuat/palate/palate` | You have Homebrew + want upgrades via `brew upgrade` |
-| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.1.2` is published (real release SHA256s are filled by GoReleaser on publish) |
+| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.2.0` is published (real release SHA256s are filled by GoReleaser on publish) |
 | Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` | Any Unix with `curl` |
 | From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
 | Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
@@ -19,18 +19,34 @@ palate --help
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
 
-> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.1.2` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
+> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.2.0` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
 
 ## 1. First run (all harnesses)
 
 ```sh
-palate init                 # creates .palate/palate.db (0700/0600) + DDL (WAL, FTS5)
-palate prefer "use table-driven tests"   # smoke: writes a STATED preference (w=0.8 → c=0.4)
+palate init                 # creates the Palate home: palate.db (0700/0600, WAL, FTS5), state/, backups/, config.yaml
+palate prefer "use table-driven tests"   # smoke: writes a STATED preference (w=0.8 → c=0.4) and refreshes TASTE.md
 palate recall "testing" --json            # smoke: recall
 palate prewarm                             # smoke: <palate-prewarm scope="session">…</palate-prewarm>
+cat ~/.claude/palate/TASTE.md              # the human-readable profile, kept current after every write
 ```
 
-Config is `config.yaml` in the repo root (weights, half-life 168h, token budgets, trust tiers). Env overrides: `PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_MCP_TOKEN`.
+**Where everything lives — one durable home, every harness.** Palate keeps a single machine-wide store at
+`~/.claude/palate/` (the same placement skill-concierge uses), shared by Claude Code, Codex, Command Code and
+ZCode: `palate.db` (the events log — the source of truth), `TASTE.md` (auto-maintained render), `config.yaml`
+(seeded once from the shipped default, never overwritten), `state/` (hook snapshots, recovery block, distiller
+lock), `skills/`, `skill-candidates/`, `backups/`. Override the location with `PALATE_HOME=<dir>` (or `home:` in
+a repo-local `config.yaml`). `palate doctor` prints `home: … mode: global`.
+
+**Legacy per-repo layout (0.1.x) keeps working by detection.** A directory that already carries
+`./.palate/palate.db` stays in `mode: legacy-repo` — DB, state and `TASTE.md` under `./.palate/` exactly as before,
+the global home untouched. To fold such a repo into the global store once: `palate push` in the repo, then
+`cd ~ && palate pull <repo>/TASTE.md` (lands as `IMPORTED w≤0.4`, promotable), then remove the repo's `.palate/`
+(back it up first; `backups/` in the home is the convention).
+
+Config precedence: `--config` > `./config.yaml` > `<home>/config.yaml` > defaults; env overrides `PALATE_HOME`,
+`PALATE_DB_PATH`, `PALATE_RENDER_AUTO=0` (turn the auto TASTE.md off), `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`,
+`PALATE_MCP_TOKEN`.
 
 ## 2. Harness matrix — who learns vs who recalls
 
@@ -105,7 +121,7 @@ palate hook install          # .claude/settings.local.json + .commandcode/settin
 palate doctor                # adapter: Claude Code learning · Command Code learning · ZCode learning
 ```
 
-> Hook handlers open the DB with the same auto-create as `palate init`: the first hook that fires in a workspace without `.palate/` creates it (0700/0600). Run `palate init` first if you want that moment to be explicit.
+> Hook handlers open the DB with the same auto-create as `palate init`: the first hook that fires creates the Palate home (0700/0600) — `~/.claude/palate/` by default, or the repo's own `.palate/` when that legacy layout already exists. Run `palate init` first if you want that moment to be explicit.
 
 **Agent (explicit targets):**
 
@@ -140,7 +156,7 @@ palate prewarm --scope session | head -20
 palate prewarm --scope goal --prompt "write table-driven tests" | head -20
 ```
 
-Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `.palate/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code / Command Code only).
+Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `<home>/state/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code / Command Code only).
 
 ---
 
@@ -317,7 +333,8 @@ palate prefer "chat test" && palate recall "chat" --json
 palate prewarm | head -5              # <palate-prewarm …>
 palate sleep && palate stats
 palate verify capture --pure          # caveats: n=7, hash, --pure
-TASTE.md                               # after `palate push` → lint ok
+cat "$(palate doctor | sed -n 's/^taste: \([^ ]*\).*/\1/p')"   # TASTE.md is already current — no push needed
+palate lint                            # lints the auto-maintained file → lint: ok
 ```
 
 ## 7. Uninstall
@@ -327,7 +344,8 @@ TASTE.md                               # after `palate push` → lint ok
 palate hook uninstall                    # claude_code + command_code + zcode (workspace)
 palate hook uninstall --harness zcode-global
 # recall-only harnesses: remove the {"palate": {"command":"palate",...}} entry from the harness MCP config
-rm -rf .palate TASTE.md               # local data only; events log is gone with the DB
+rm -rf ~/.claude/palate               # the global home (DB, TASTE.md, state, backups) — events log is gone with the DB
+rm -rf .palate TASTE.md               # per-repo leftovers from the legacy layout, if any
 ```
 
 ## 8. What is not wired (so you don't chase it)
