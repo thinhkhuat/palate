@@ -160,11 +160,13 @@ func TestBackupBeforeForgetAndPull(t *testing.T) {
 	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), "-forget") {
 		t.Fatalf("forget must leave one backup, got %v", entries)
 	}
-	if err := os.WriteFile("TASTE.md", []byte("# Taste\n\n## Testing\n\n- use golden files. Confidence: 0.40\n"), 0o644); err != nil {
+	// pull takes an explicit path (the migrate one-liner relies on it)
+	src := filepath.Join(t.TempDir(), "exported-TASTE.md")
+	if err := os.WriteFile(src, []byte("# Taste\n\n## Testing\n\n- use golden files. Confidence: 0.40\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCLI(t, "pull"); err != nil {
-		t.Fatalf("pull: %v", err)
+	if out, err := runCLI(t, "pull", src); err != nil || !strings.Contains(out, "reimported 1 preferences") {
+		t.Fatalf("pull <path>: err=%v out=%s", err, out)
 	}
 	storage.Close()
 	entries, _ = os.ReadDir(cfg.BackupDir())

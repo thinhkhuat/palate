@@ -504,9 +504,14 @@ func cmdPush() *cobra.Command {
 
 func cmdPull() *cobra.Command {
 	return &cobra.Command{
-		Use:   "pull",
-		Short: "Pull TASTE.md then reimport",
+		Use:   "pull [path]",
+		Short: "Reimport a TASTE.md (default ./TASTE.md) into the store as IMPORTED w<=0.4",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "TASTE.md"
+			if len(args) > 0 {
+				path = args[0]
+			}
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
@@ -515,12 +520,12 @@ func cmdPull() *cobra.Command {
 			} else if bak != "" {
 				fmt.Fprintln(os.Stderr, "backup:", bak)
 			}
-			n, err := render.Reimport(db, "TASTE.md")
+			n, err := render.Reimport(db, path)
 			if err != nil {
-				fmt.Println("pull: git pull first, then reimport —", err)
+				fmt.Println("pull: nothing to reimport —", err)
 				return nil
 			}
-			fmt.Printf("reimported %d preferences from TASTE.md (IMPORTED w<=0.4 quarantine)\n", n)
+			fmt.Printf("reimported %d preferences from %s (IMPORTED w<=0.4 quarantine)\n", n, path)
 			return nil
 		},
 	}
