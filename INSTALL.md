@@ -60,7 +60,39 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 **What you get:** passive learning (`model_edit`, `user_correction`, `user_diff w=0.6`, `stated_preference`) + `explicit_*` tools + prewarm injection.
 
-**Human:**
+**Claude Code and Codex — install as a plugin (preferred):**
+
+```sh
+# Claude Code
+/plugin marketplace add thinhkhuat/palate
+/plugin install palate@palate
+
+# Codex
+codex plugin marketplace add thinhkhuat/palate
+codex plugin add palate@palate
+```
+
+This wires the five hooks (`hooks/hooks.json`, generated from
+`adapters.GenerateClaudeCodeHooks` — see `internal/adapters/plugin_manifests_test.go`),
+the MCP server (`.mcp.json` / `.codex-plugin/mcp.json`), the `palate` skill,
+and the `/palate:learn` / `/palate:taste` commands in one step — `bin/palate`
+resolves a binary itself (`PALATE_BIN` → staged per-platform binary → `PATH`
+→ a locked local `go build` fallback → one stderr line, fail-open). Verify
+with `palate hook help` (warns if a workspace-level install is *also* wired —
+see the migration note below) or `claude plugin list` / `codex plugin list`.
+
+**Migrating from a manual `palate hook install`:** once the plugin is
+installed, retire the workspace-level entries it now duplicates:
+
+```sh
+palate hook uninstall --harness claude_code
+```
+
+**Command Code / ZCode / no-plugin setups — `palate hook install`:**
+
+Command Code has no plugin system here (out of scope — only Claude Code and
+Codex have one); ZCode and any setup that isn't using the plugin path still
+wire hooks by hand:
 
 ```sh
 palate hook install          # .claude/settings.local.json + .commandcode/settings.local.json + .zcode/config.json (workspace)
@@ -211,9 +243,67 @@ Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
 | `model_edit` | 0.4 | weakest |
 | `llm_proposal` | — | never deterministic until `palate promote --as` |
 
-Update: `c ← decay(c, c_floor, half_life=168h, Δt)`, `reinforce c + (1-c)·w·0.3`, `weaken max(c_floor, c·(1-w·0.3))` on contradiction (negation/antonym, same-category scan; loser hidden, winner shown in a `conflicts` row), clamp `[c_floor,1.0]`, `last_reinforced_at`+`reinforcement_count` bump. New pref: `max(c_floor, w·0.5)`. Recall replays decay pinned to `--as-of` (RFC3339); `--include-conflicted` shows hidden losers. Freshness tiers (`freshness.enabled`, T1/T2/T3 weights) multiply the decayed score when enabled.
+Update: `c ← decay(c, c_floor, half_life=168h, Δt)`, `reinforce c + (1-c)·w·0.3`, `weaken max(c_floor, c·(1-w·0.3))` on contradiction (negation/antonym, same-category scan; loser hidden, winner shown in a `conflicts` row), clamp `[c_floor,1.0]`, `last_reinforced_at`+`reinforcement_count` bump. New pref: `max(c_floor, w·0.5)`; `llm_distilled` seeds at the model's confidence clamped to `[c_floor, 0.9]`. Recall replays decay pinned to `--as-of` (RFC3339); `--include-conflicted` shows hidden losers. Freshness tiers (`freshness.enabled`, T1/T2/T3 weights) multiply the decayed score when enabled.
 
-## 5. After install — smoke checklist (run for every harness)
+## 5. LLM taste distiller (optional)
+
+Everything above learns from regex-matched phrases and raw diffs. The
+distiller is a second, optional learning path: it sends transcript/git
+evidence to an LLM on **your own gateway** and stores what comes back as
+natural-language preferences at `trust_tier=DISTILLED` — same
+decay/reinforce math, same `preferences` table, same `TASTE.md` render, same
+`safety.Scan` gate as every other signal. **No `PALATE_LLM_*` env set = the
+distiller is silently off; today's regex/verbatim paths keep working exactly
+as they do without it.**
+
+```sh
+export PALATE_LLM_ENDPOINT=https://your-gateway/v1/chat/completions
+export PALATE_LLM_MODEL=your-model-id
+export PALATE_LLM_API_KEY=...            # optional — some gateways need none
+```
+
+`PALATE_LLM_ENDPOINT` + `PALATE_LLM_MODEL` must both be set for the
+distiller to activate; a plaintext `http://` endpoint to a non-loopback host
+prints one warning (not a refusal) since it's your own infrastructure. See
+[`docs/security.md`](docs/security.md) for exactly what is sent and what is
+stripped before it leaves the machine.
+
+**Live learning (no command to run):** once `PALATE_LLM_*` is set, the
+`Stop` and `SessionStart` hooks (§2.1) spawn `palate learn session` as a
+detached, fire-and-forget child on every turn — the hook itself never waits
+on the LLM call, so a slow or dead gateway never adds hook latency.
+
+**On-demand learning (explicit commands):**
+
+```sh
+palate learn session <path> [--harness H] [--verbose]     # one transcript
+palate learn sessions [--harness H] [--project P] [--all] [--include-experimental]
+palate learn journals [--include-global]                   # memsearch only
+palate learn repo [path] [--max-commits N] [--max-signals N] [--all-authors]
+```
+
+`sessions` runs discovery + windowing across every registered reader (Claude
+Code, Command Code, Pi, Codex, OpenCode, Gemini CLI, memsearch — capped to
+the 20 most-recently-modified transcripts per harness unless `--all`).
+**ZCode transcript reading is experimental and off by default** — it only
+runs under `--include-experimental` (distinct from ZCode's hook-based
+*live* learning in §2.1, which is unaffected). `journals` scans
+project-local `.memsearch/memory/*.md` only, unless `--include-global` opts
+into the user's global journal directory (printed once, never silent).
+`repo [path]` walks git history (default: current author's own commits only
+— `--all-authors` opts out) and is capped by both `--max-commits` and
+`--max-signals`.
+
+Re-running the same command is a no-op once a transcript/commit range has
+already been distilled — a per-source cursor tracks how far each was
+analyzed, so nothing is re-sent to the gateway or re-learned twice.
+
+`distill.mode` in [`config.yaml`](config.yaml) controls whether a distilled
+statement lands automatically (`auto`, the default) or as a `palate propose`
+row awaiting `palate promote` (`review`) — the human-gate option if you'd
+rather approve each one.
+
+## 6. After install — smoke checklist (run for every harness)
 
 ```sh
 palate doctor                         # green
@@ -221,11 +311,11 @@ palate store "hello" && palate recall "hello" --json
 palate prefer "chat test" && palate recall "chat" --json
 palate prewarm | head -5              # <palate-prewarm …>
 palate sleep && palate stats
-palate verify capture --pure          # caveats: n=6, hash, --pure
+palate verify capture --pure          # caveats: n=7, hash, --pure
 TASTE.md                               # after `palate push` → lint ok
 ```
 
-## 6. Uninstall
+## 7. Uninstall
 
 ```sh
 # hook-based harnesses (removes only palate entries; foreign hooks preserved)
@@ -235,9 +325,12 @@ palate hook uninstall --harness zcode-global
 rm -rf .palate TASTE.md               # local data only; events log is gone with the DB
 ```
 
-## 7. What is not wired (so you don't chase it)
+## 8. What is not wired (so you don't chase it)
 
 - OMP, Hermes, Pi, OpenClaw, OpenCode are **recall-only until `docs/adapters/verification.md` proves hooks** — no hidden learning.
 - Vectors are FTS5 + JSON cosine by default (`sqlite-vec` behind a build tag — zero-CGO default stays CGO-free).
+- ZCode **transcript** reading (`palate learn sessions --include-experimental`,
+  §5) is experimental and opt-in — it is off by default and unrelated to
+  ZCode's hook-based *live* learning in §2.1, which is unaffected.
 
 Further reading: [`docs/adapters.md`](docs/adapters.md) · [`docs/adapters/verification.md`](docs/adapters/verification.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/security.md`](docs/security.md)

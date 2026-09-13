@@ -10,6 +10,7 @@ Single Go binary, no CGO, SQLite-only (FTS5 + JSON+cosine; `sqlite-vec` behind a
 - **Render** (`internal/render`): deterministic `TASTE.md` render, `lint`, content-hash `reimport` (quarantine `IMPORTED w=0.4`).
 - **MCP** (`internal/mcp`): stdio + SSE, 8 tools with typed input schemas (the SDK derives them from the handler structs), `PALATE_MCP_TOKEN` + loopback allowlist bind guard (refuses empty-host binds without a token), and a per-request `Authorization: Bearer <token>` check on SSE whenever a token is set.
 - **Safety** (`internal/safety`): secret censor + injection scanner (clean content unwrapped).
+- **Distill** (`internal/distill`, optional): stdlib HTTP client for the user's own OpenAI-compatible gateway, taste-distilling prompt, cursor-tracked windowing, 8 transcript readers (Claude Code, Command Code, Pi, Codex, OpenCode, Gemini CLI, memsearch journals, ZCode-experimental) plus git history — turns evidence into `llm_distilled` signals at `trust_tier=DISTILLED`; silently inert with no `PALATE_LLM_*` set.
 - **Verify** (`internal/verify`): blinded scenarios, hash, `--pure` flag, `IndependenceCheck`; `verify retrieval` reports `retrieval_hit_rate`.
 - **Skills** (`internal/skills`): clustering (≥3), deterministic templating + hash, rumination gate.
 
@@ -17,7 +18,13 @@ Single Go binary, no CGO, SQLite-only (FTS5 + JSON+cosine; `sqlite-vec` behind a
 
 Signal → safety gate → `learn.ApplySignal` → `preferences` + `events` → prewarm/recall/render.
 
+Distiller path (optional, only when `PALATE_LLM_*` is set): Transcript/git
+evidence → `distill.Distill` (secret-redact → prompt → gateway → parse) →
+safety gate → `learn.ApplySignal` (`llm_distilled`) → `preferences` +
+`events` — same downstream path as every other signal from there.
+
 ## What is not wired
 
 - Post-MVP adapters beyond Claude Code / Command Code / ZCode are recall-only until TASK-900 live verification.
 - `sqlite-vec` native vectors require a build tag; default is FTS + JSON cosine (`VectorSearchFallback` is the seam).
+- ZCode's transcript reader (`internal/distill`) is experimental and opt-in (`--include-experimental`) — separate from ZCode's hook-based live learning, which is proven (see `docs/adapters/verification.md`).

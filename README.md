@@ -14,13 +14,34 @@
 Harness-native "taste" (like Command Code's closed one) works because the harness *is* the learner — it sees every accept/reject. A portable taste engine can't. **Palate's trick is to learn only from what any harness can actually observe** — your edits, your diffs, your explicit `prefer`/`correct` — score each preference with a confidence that decays and reinforces over time, and *push* it back via a prewarm block so the agent doesn't have to remember to ask.
 
 - **Single Go binary. No CGO. SQLite-only.** `modernc.org/sqlite` + FTS5 + JSON+cosine (and `sqlite-vec` behind a build tag when you want it).
-- **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept` — no invented `accept/reject` primitive.
+- **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` (optional) — no invented `accept/reject` primitive.
 - **Push prewarm:** SessionStart ~500 tok once per session + UserPromptSubmit ~200 tok only when your *intent* changes. Honest budgets, disclosed.
 - **TASTE.md is a render, not the truth.** The `events` log in `.palate/*.db` is the source of truth; `TASTE.md` is a reviewable, git-shareable artifact.
 
 ---
 
-## 30-second start
+## Install as a plugin
+
+Claude Code and Codex both install Palate as a single plugin — manifests,
+hooks, MCP server, the `palate` skill, and `/palate:learn` / `/palate:taste`
+all come from this repo, no manual wiring:
+
+```sh
+# Claude Code
+/plugin marketplace add thinhkhuat/palate
+/plugin install palate@palate
+
+# Codex
+codex plugin marketplace add thinhkhuat/palate
+codex plugin add palate@palate
+```
+
+The plugin's `bin/palate` launcher resolves a binary itself (an existing
+install on `PATH`, or a local `go build` fallback) — you don't need the
+binary preinstalled first. Command Code, ZCode, and no-plugin setups still
+use `palate hook install` — see [INSTALL.md](INSTALL.md) §2.1.
+
+## 30-second start (no plugin — manual wiring)
 
 ```sh
 brew install thinhkhuat/palate/palate   # or: go install github.com/thinhkhuat/palate/cmd/palate@latest
@@ -35,6 +56,17 @@ palate verify capture --pure
 ```
 
 Detailed install for every harness: **[INSTALL.md](INSTALL.md)**
+
+### LLM distiller (optional)
+
+A second, opt-in learning path: point `PALATE_LLM_ENDPOINT` /
+`PALATE_LLM_MODEL` / `PALATE_LLM_API_KEY` at your own OpenAI-compatible
+gateway and `palate learn session/sessions/repo/journals` (or the `Stop` /
+`SessionStart` hooks, once those env vars are set) turn transcripts, git
+history, and memsearch journals into `llm_distilled` preferences —
+`trust_tier=DISTILLED`, same confidence/decay math as everything else. **Off
+by default** — no env set, no distiller, today's regex/verbatim paths keep
+working unchanged. Details: [INSTALL.md §5](INSTALL.md#5-llm-taste-distiller-optional).
 
 ---
 
@@ -67,11 +99,11 @@ Observable signal → safety gate (secret + injection scan) → confidence updat
                                               push prewarm (session / intent) ←→ recall / TASTE.md
 ```
 
-**Confidence math:** `decay(c, c_floor, half_life=168h, Δt) → reinforce/ weaken (w·0.3) → clamp [c_floor,1.0]`, bump `last_reinforced_at` + `reinforcement_count`. Contradictions (negation/antonym, same-category scan) weaken the old row and open a `conflicts` row — the loser hides, the winner shows. New preference seeds at `max(c_floor, w·0.5)`. Tie-break: `confidence → reinforcement_count → last_reinforced_at`. Every mutation is append-only in `events` — replay is deterministic when pinned to an `as_of` instant (`recall --as-of RFC3339`).
+**Confidence math:** `decay(c, c_floor, half_life=168h, Δt) → reinforce/ weaken (w·0.3) → clamp [c_floor,1.0]`, bump `last_reinforced_at` + `reinforcement_count`. Contradictions (negation/antonym, same-category scan) weaken the old row and open a `conflicts` row — the loser hides, the winner shows. New preference seeds at `max(c_floor, w·0.5)`; a distilled statement (`llm_distilled`) seeds at the model's own confidence, clamped to `[c_floor, 0.9]`. Tie-break: `confidence → reinforcement_count → last_reinforced_at`. Every mutation is append-only in `events` — replay is deterministic when pinned to an `as_of` instant (`recall --as-of RFC3339`).
 
 **Storage:** BEAM-like tiers `working → episodic → scratchpad`, FTS5 triggers on all content tables, `preferences` + `conflicts` bi-temporal, `capture_counters`, recall = FTS + preference scan + RRF with decay replay, conflict filtering, and optional freshness tiers (JSON+cosine vec seam for the `sqlite-vec` build).
 
-**Skills (Phase 9):** Corrections with `reinforcement_count ≥2` cluster by category; ≥3 → deterministic `SKILL.md` (`agentskills.io` frontmatter) via `palate skill cluster`. Candidates are inert until `palate skill install`. Rumination gate rejects cosmetic edits and demands `why_better ≥40` + a testable prediction.
+**Skills:** Corrections with `reinforcement_count ≥2` cluster by category; ≥3 → deterministic `SKILL.md` (`agentskills.io` frontmatter) via `palate skill cluster`. Candidates are inert until `palate skill install`. Rumination gate rejects cosmetic edits and demands `why_better ≥40` + a testable prediction.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](docs/TASTE-format.md).
 

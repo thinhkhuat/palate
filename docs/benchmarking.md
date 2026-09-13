@@ -12,7 +12,7 @@ PALATE_JUDGE=gpt-4o palate verify capture  # records judge identity
 
 ## Scenarios
 
-- `internal/verify/scenarios.go` v1 (n=6, hash `53d17edeb67dfdca`). Blinded set — do not tune the learner against it.
+- `internal/verify/scenarios.go` v1 (n=7, hash `a17c0dc0290b81cb`, incl. one `llm_distilled` scenario). Blinded set — do not tune the learner against it.
 - Add scenarios by appending to `ScenariosV1` and bumping the hash; CI should hash-lock `scenarios.go`.
 
 ## Caveats block (required)
@@ -20,7 +20,7 @@ PALATE_JUDGE=gpt-4o palate verify capture  # records judge identity
 Each `verify` report prints:
 
 ```json
-{"version":"v1","scenarios_hash":"...","judge":"...","pure":true,"caveats":"n=6; hash=...; --pure: oracles disabled"}
+{"version":"v1","scenarios_hash":"...","judge":"...","pure":true,"caveats":"n=7; hash=...; --pure: oracles disabled"}
 ```
 
 Capture reports per-signal rates under `capture_rates`; retrieval reports
