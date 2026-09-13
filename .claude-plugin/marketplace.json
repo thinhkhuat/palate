@@ -3,7 +3,7 @@
   "owner": { "name": "thinhkhuat" },
   "metadata": {
     "description": "Open taste engine — learns coding style from observable signals and pushes it back into your AI harness.",
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "plugins": [
     {
@@ -12,7 +12,7 @@
       "description": "Learns your coding taste from observable signals (edits, corrections, explicit statements, and — when an LLM gateway is configured — distilled session/git-history evidence) and pushes it back via prewarm. Single Go binary, no CGO, SQLite-only.",
       "category": "developer-tools",
       "tags": ["taste", "learning", "mcp"],
-      "version": "0.3.0"
+      "version": "0.3.1"
     }
   ]
 }

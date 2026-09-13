@@ -24,12 +24,12 @@ WB="$(mktemp -d)"
 (cd "$WB" && PALATE_HOME="$WB/home" "$BIN" init >/dev/null)
 
 # rpc_seq — the initialize -> notifications/initialized -> tools/list
-# handshake, id 2 on the tools/list request; sleeps 1s before closing stdin.
+# handshake, id 2 on the tools/list request. stdin closes right after the
+# last line: the server must still answer (stdio guard, decisions row 16).
 rpc_seq() {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"verify-plugin-mcp","version":"0.0.0"}}}'
   printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
   printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-  sleep 1
 }
 
 # tool_names <raw-jsonrpc-output> — extracts the id:2 result's sorted tool

@@ -1,25 +1,22 @@
 # Install — Palate (every harness)
 
-Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pick one for humans, one for agents. Both end at `palate doctor → green` before you wire any harness.
+Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pick one for humans, one for agents. Both end at `palate init && palate doctor → green` before you wire any harness.
 
 ## 0. Get the binary
 
 | Path | Command | When to use |
 |------|---------|-------------|
-| Homebrew | `brew install thinhkhuat/palate/palate` | Once the tap `thinhkhuat/homebrew-palate` is published (the release workflow pushes it only when `HOMEBREW_TAP_GITHUB_TOKEN` is set) |
-| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | Same tap prerequisite; builds `main` from source |
-| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.3.0` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
+| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.3.1` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
 | From source | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ and git access to the private repo |
-| Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
+| Agent (no prompt) | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest && palate init && palate doctor` | CI / agent bootstrap — single shot, no TTY |
 
 Verify:
 
 ```sh
 palate --help
+palate init     # creates the home (~/.claude/palate) and the DB; doctor never creates it as a side effect
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
-
-> The `stable` block in `homebrew/palate.rb` is a placeholder; GoReleaser writes the real formula (with sha256s) into the tap on publish. Don't plain `brew install` from that blob — until the tap exists, use `install.sh` or `go install`.
 
 ## 1. First run (all harnesses)
 
@@ -99,9 +96,9 @@ resolves a binary itself (`PALATE_BIN` → staged per-platform binary → `PATH`
 with `palate hook help` (warns if a workspace-level install is *also* wired —
 see the migration note below) or `claude plugin list` / `codex plugin list`.
 
-> **Plugin update ≠ binary update.** `bin/palate` prefers a `palate` already on `PATH` (`go install`, Homebrew) over building
+> **Plugin update ≠ binary update.** `bin/palate` prefers a `palate` already on `PATH` (`go install`, `install.sh`) over building
 > from the plugin's own tree, so after `/plugin marketplace update` the hooks keep running whatever that binary was built from.
-> Refresh it too — `go install github.com/thinhkhuat/palate/cmd/palate@latest` (or `brew upgrade palate`) — or remove it and let the
+> Refresh it too — `go install github.com/thinhkhuat/palate/cmd/palate@latest` (or re-run `install.sh`) — or remove it and let the
 > launcher build from the updated tree.
 
 **Migrating from a manual `palate hook install`:** once the plugin is
@@ -360,6 +357,7 @@ write, one per distilled transcript batch, one per consolidation pass.
 ## 6. After install — smoke checklist (run for every harness)
 
 ```sh
+palate init                           # no-op if the home already exists
 palate doctor                         # green
 palate store "hello" && palate recall "hello" --json
 palate prefer "chat test" && palate recall "chat" --json

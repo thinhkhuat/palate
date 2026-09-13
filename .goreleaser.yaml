@@ -14,17 +14,3 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: checksums.txt
-# `brews` is soft-deprecated upstream (v2.10+) in favour of `homebrew_casks`; it still
-# validates on v2.18. Migrating changes the install story (casks are macOS-only), so it is
-# a deliberate separate decision. The tap push is gated on HOMEBREW_TAP_GITHUB_TOKEN: without
-# it (no tap repo yet) the formula is only written to dist/ and the release still succeeds.
-brews:
-  - repository:
-      owner: thinhkhuat
-      name: homebrew-palate
-      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
-    directory: Formula
-    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
-    homepage: "https://github.com/thinhkhuat/palate"
-    description: "Open taste engine — learns style from observable signals"
-    license: "MIT"

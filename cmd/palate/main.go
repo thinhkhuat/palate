@@ -375,6 +375,8 @@ func cmdServe() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "serve",
 		Short: "Serve MCP (stdio default, --port for SSE)",
+		// A transport error is a runtime event, not a usage mistake: one line, no flag dump.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			if port != "" {

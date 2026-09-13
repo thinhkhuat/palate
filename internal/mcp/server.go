@@ -20,7 +20,7 @@ import (
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.3.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.3.1"}, nil)
 	registerTools(s)
 	return s
 }
@@ -233,7 +233,7 @@ func handleForget(ctx context.Context, req *mcp.CallToolRequest, in ForgetInput)
 
 func ServeStdio(cfg config.Config) error {
 	srv := NewServer(cfg)
-	return srv.Run(context.Background(), &mcp.StdioTransport{})
+	return srv.Run(context.Background(), newStdioTransport())
 }
 
 func ServeSSE(cfg config.Config, addr string) error {

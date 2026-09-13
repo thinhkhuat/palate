@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.3.0-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.3.1-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
@@ -159,7 +159,7 @@ Details: [`docs/security.md`](docs/security.md)
 go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
 
-Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: pushing a `v*` tag runs `.github/workflows/release.yml` (GoReleaser → GitHub Release with `palate_<ver>_<os>_<arch>.tar.gz` + `checksums.txt`, which `install.sh` downloads through an authenticated `gh` or `GITHUB_TOKEN`, the repo being private). The Homebrew tap push (`thinhkhuat/homebrew-palate`) only happens when the `HOMEBREW_TAP_GITHUB_TOKEN` secret is set; until then use `install.sh` or `go install`.
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: pushing a `v*` tag runs `.github/workflows/release.yml` (GoReleaser → GitHub Release with `palate_<ver>_<os>_<arch>.tar.gz` + `checksums.txt`, which `install.sh` downloads through an authenticated `gh` or `GITHUB_TOKEN`, the repo being private). Install paths: `install.sh` (authenticated, private repo) or `go install` with `GOPRIVATE`.
 
 ## License
 
