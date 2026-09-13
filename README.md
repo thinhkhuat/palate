@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.2.0-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.3.0-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
@@ -14,7 +14,8 @@
 Harness-native "taste" (like Command Code's closed one) works because the harness *is* the learner — it sees every accept/reject. A portable taste engine can't. **Palate's trick is to learn only from what any harness can actually observe** — your edits, your diffs, your explicit `prefer`/`correct` — score each preference with a confidence that decays and reinforces over time, and *push* it back via a prewarm block so the agent doesn't have to remember to ask.
 
 - **Single Go binary. No CGO. SQLite-only.** `modernc.org/sqlite` + FTS5 + JSON+cosine (and `sqlite-vec` behind a build tag when you want it).
-- **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` (optional) — no invented `accept/reject` primitive.
+- **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` — no invented `accept/reject` primitive.
+- **Your LLM gateway is the taste brain.** With `PALATE_LLM_*` set, the model judges every explicit write (wording, category, confidence, and whether it is new / the same / a refinement / a contradiction of what is stored), distills transcripts, journals and git, and periodically consolidates the whole profile (`palate consolidate`: merge, rewrite, rescore, retire — review mode files proposals). Without a gateway the built-in heuristics run exactly as before.
 - **Push prewarm:** SessionStart ~500 tok once per session + UserPromptSubmit ~200 tok only when your *intent* changes. Honest budgets, disclosed.
 - **One durable home, every harness.** `~/.claude/palate/` (override `PALATE_HOME`) holds the store for Claude Code, Codex, Command Code and ZCode alike — same placement as skill-concierge. A repo that still has `./.palate/palate.db` keeps that legacy layout by detection.
 - **TASTE.md is a render, kept current — not the truth.** The `events` log in `palate.db` is the source of truth; `TASTE.md` beside it is re-rendered after every write (hooks, CLI, MCP, distiller), each line tagged with its source and trust tier, so you can review what Palate learned without opening SQLite. `palate push` exports a git-shareable copy into the repo.
@@ -117,7 +118,8 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | `palate init` | Create the Palate home (`~/.claude/palate/`: `palate.db` 0700/0600 WAL, `state/`, `backups/`, seeded `config.yaml`) |
 | `palate doctor` | Check sqlite, fts5, vector, 13 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
 | `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted`; `recall` prints the `id=` that `forget` takes, for memories and preferences alike |
-| `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns |
+| `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns; with a gateway the model judges wording, category, confidence and relation, and the verdict is printed |
+| `palate consolidate` | Whole-profile review by the gateway: merge / rewrite / rescore / retire (auto after a backup, or proposals in `distill.mode: review`); auto-fired by SessionStart every `consolidate.every_events` events; also run by `sleep` |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
 | `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |
 | `palate lint / push / pull / reindex` | `lint` checks the auto-maintained `TASTE.md`; `push` exports a git-shareable copy; `pull` reimports one (`IMPORTED w≤0.4`); `reindex` rebuilds FTS from DB |
@@ -157,7 +159,7 @@ Details: [`docs/security.md`](docs/security.md)
 go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
 
-Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.2.0` is actually published, use `brew install --HEAD` or `go install`.
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: GoReleaser (`--brews` tap `thinhkhuat/homebrew-palate`) + `install.sh`; Homebrew `stable` sha is filled on publish — until `v0.3.0` is actually published, use `brew install --HEAD` or `go install`.
 
 ## License
 

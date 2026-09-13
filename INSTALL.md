@@ -7,7 +7,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 | Path | Command | When to use |
 |------|---------|-------------|
 | Homebrew | `brew install thinhkhuat/palate/palate` | You have Homebrew + want upgrades via `brew upgrade` |
-| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.2.0` is published (real release SHA256s are filled by GoReleaser on publish) |
+| Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | You're on `main` before `v0.3.0` is published (real release SHA256s are filled by GoReleaser on publish) |
 | Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` | Any Unix with `curl` |
 | From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
 | Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
@@ -19,7 +19,7 @@ palate --help
 palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
 ```
 
-> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.2.0` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
+> The `stable` block in `homebrew/palate.rb` is a placeholder until `v0.3.0` is actually published. Don't plain `brew install` from that blob — use `--HEAD` or `go install` until the release lands (GoReleaser fills real sha256 on publish).
 
 ## 1. First run (all harnesses)
 
@@ -268,16 +268,46 @@ Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
 
 Update: `c ← decay(c, c_floor, half_life=168h, Δt)`, `reinforce c + (1-c)·w·0.3`, `weaken max(c_floor, c·(1-w·0.3))` on contradiction (negation/antonym, same-category scan; loser hidden, winner shown in a `conflicts` row), clamp `[c_floor,1.0]`, `last_reinforced_at`+`reinforcement_count` bump. New pref: `max(c_floor, w·0.5)`; `llm_distilled` seeds at the model's confidence clamped to `[c_floor, 0.9]`. Recall replays decay pinned to `--as-of` (RFC3339); `--include-conflicted` shows hidden losers. Freshness tiers (`freshness.enabled`, T1/T2/T3 weights) multiply the decayed score when enabled.
 
-## 5. LLM taste distiller (optional)
+## 5. LLM gateway — the taste brain
 
-Everything above learns from regex-matched phrases and raw diffs. The
-distiller is a second, optional learning path: it sends transcript/git
-evidence to an LLM on **your own gateway** and stores what comes back as
-natural-language preferences at `trust_tier=DISTILLED` — same
-decay/reinforce math, same `preferences` table, same `TASTE.md` render, same
-`safety.Scan` gate as every other signal. **No `PALATE_LLM_*` env set = the
-distiller is silently off; today's regex/verbatim paths keep working exactly
-as they do without it.**
+With a gateway configured, the model on **your own infrastructure** does what
+Command Code's own model does for its taste file — it is the primary judge,
+not an add-on. Three roles, all behind the same `safety.Scan`/`Censor` gate:
+
+1. **Judge on every explicit write** — `palate prefer/correct/reject/accept`,
+   the six MCP tools, `palate pull`, `palate promote`. The model rewrites the
+   candidate into one durable third-person statement (your language is kept),
+   picks the category, assigns the confidence from the wording (an explicit
+   "always/never" ≈ 0.8, a hedged remark ≈ 0.4; capped at 0.95 so a single
+   verdict never looks certain), and decides its relation to the rows already
+   in that category: `new`, `same` (reinforces it), `refines` (rewrites it in
+   place, the old text kept in a `refine` event), or `contradicts` (weakens it,
+   opens a conflict, stores the new side). `palate prefer` prints the verdict:
+   `prefer recorded (Testing, refines, c=0.85, llm)`. `judge.enabled: false` or
+   `PALATE_JUDGE=0` switches back to the heuristics.
+2. **Distiller over transcripts, journals and git** (below) — unchanged.
+3. **Consolidator over the whole profile** — `palate consolidate` (also run by
+   `palate sleep`, and auto-fired detached by `SessionStart` once
+   `consolidate.every_events` new events have landed, default 25): the model
+   reads every active preference and returns the smallest set of `merge`,
+   `rewrite`, `rescore`, `retire` actions. `distill.mode: auto` applies them
+   after a DB backup; `review` files each as a proposal for `palate promote`.
+   Guards: a row reinforced in the last 24 h is never retired; a pass touching
+   more than 40 % of the rows is downgraded to proposals whatever the mode.
+
+**No gateway = the heuristics, exactly as 0.2.x behaved**: keyword category,
+weight×0.5 confidence, exact/negation/near-duplicate matching, regex stated
+preferences and raw diffs. A gateway that errors mid-call falls back to the
+same heuristics for that write, prints one `judge fell back to heuristics`
+line and bumps the `judge_fallback` counter (`palate stats`). `palate doctor`
+prints `judge: llm (<model>)` or `judge: heuristic (…)` and the consolidation
+watermark.
+
+### 5.1 Distiller (transcripts, journals, git)
+
+The distiller sends transcript/git evidence to the gateway and stores what
+comes back as natural-language preferences at `trust_tier=DISTILLED` — same
+decay/reinforce math, same `preferences` table, same `TASTE.md` render.
 
 ```sh
 export PALATE_LLM_ENDPOINT=https://your-gateway/v1/chat/completions
@@ -286,7 +316,7 @@ export PALATE_LLM_API_KEY=...            # optional — some gateways need none
 ```
 
 `PALATE_LLM_ENDPOINT` + `PALATE_LLM_MODEL` must both be set for the
-distiller to activate; a plaintext `http://` endpoint to a non-loopback host
+gateway roles to activate; a plaintext `http://` endpoint to a non-loopback host
 prints one warning (not a refusal) since it's your own infrastructure. See
 [`docs/security.md`](docs/security.md) for exactly what is sent and what is
 stripped before it leaves the machine.
@@ -322,9 +352,10 @@ already been distilled — a per-source cursor tracks how far each was
 analyzed, so nothing is re-sent to the gateway or re-learned twice.
 
 `distill.mode` in [`config.yaml`](config.yaml) controls whether a distilled
-statement lands automatically (`auto`, the default) or as a `palate propose`
-row awaiting `palate promote` (`review`) — the human-gate option if you'd
-rather approve each one.
+statement — and every consolidation action — lands automatically (`auto`, the
+default) or as a proposal awaiting `palate promote` (`review`), the human-gate
+option if you'd rather approve each one. Cost: one gateway call per explicit
+write, one per distilled transcript batch, one per consolidation pass.
 
 ## 6. After install — smoke checklist (run for every harness)
 

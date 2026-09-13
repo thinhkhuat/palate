@@ -30,8 +30,11 @@ Do not hand-edit the Palate home (`~/.claude/palate/`, or a legacy repo
 `.palate/`) or its `TASTE.md` — both are managed stores (`TASTE.md` is an
 auto-maintained render of the DB, not the source of truth; a hand edit is
 overwritten on the next write). Instead, call the
-matching MCP tool so the statement is captured with the right weight and
-survives decay/reinforcement:
+matching MCP tool: with a gateway configured the model judges the statement
+(wording, category, confidence, and whether it is new, the same as, a
+refinement of, or a contradiction of a stored row) and the tool reply shows
+the verdict; without one the built-in weights apply. Either way it survives
+decay/reinforcement:
 
 | User says | Call |
 |---|---|
