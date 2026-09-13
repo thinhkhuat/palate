@@ -47,7 +47,12 @@ type Signal struct {
 	Evidence string `json:"evidence,omitempty"`
 }
 
-var statedPrefRe = regexp.MustCompile(`(?i)(?:i prefer|prefer|always use|never use|use \w+ (?:over|instead of)|my style is)[^.!?\n]*`)
+// statedPrefRe matches an explicit, first-person statement of preference and
+// captures the rest of the sentence. Every trigger is word-bounded and needs
+// an object after it: a bare "prefer" used to match inside "preference" /
+// "no preference on this" and store the word as a preference (observed
+// 2026-09-13 on ordinary chat text).
+var statedPrefRe = regexp.MustCompile(`(?i)\b(?:i(?:'d| would| really| strongly)? prefer|we prefer|always use|never use|use \w+ (?:over|instead of)|my style is)\b\s+[^.!?\n]+`)
 
 var correctionRe = regexp.MustCompile(`(?i)(?:wrong|incorrect|should be|should have|fix|instead|actually|no,)`)
 

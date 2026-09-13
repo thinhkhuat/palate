@@ -1,8 +1,10 @@
 package render
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thinhkhuat/palate/internal/config"
@@ -65,5 +67,97 @@ func TestReimportQuarantine(t *testing.T) {
 	n2, _ := Reimport(db, path)
 	if n2 != 0 {
 		t.Fatalf("reimport should be idempotent, got %d", n2)
+	}
+}
+
+// TestRenderHeaderAndProvenance: the header pins the last event id (no
+// timestamp churn) and every bullet ends with its source and trust tier.
+func TestRenderHeaderAndProvenance(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.Exec(`INSERT INTO preferences(id, category, statement, confidence, source, trust_tier) VALUES('p1','General','Use tabs',0.8,'explicit_prefer','STATED')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO events(event_type, payload) VALUES('create','{}')`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(db, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "<!-- auto-maintained by palate after event #1;") {
+		t.Fatalf("header missing or wrong: %q", out)
+	}
+	if !strings.Contains(out, "- Use tabs. Confidence: 0.80 (explicit_prefer, STATED)\n") {
+		t.Fatalf("provenance suffix missing: %q", out)
+	}
+	if diags := lintString(t, out); len(diags) != 0 {
+		t.Fatalf("Lint must accept the new format: %v", diags)
+	}
+}
+
+// TestSyncUnchangedNoRewrite: an unchanged DB renders byte-identical and
+// Sync reports no write the second time.
+func TestSyncUnchangedNoRewrite(t *testing.T) {
+	db := openTestDB(t)
+	_, _ = db.Exec(`INSERT INTO preferences(id, category, statement, confidence, source, trust_tier) VALUES('p1','General','Use tabs',0.8,'explicit_prefer','STATED')`)
+	path := filepath.Join(t.TempDir(), "nested", "TASTE.md")
+	wrote, err := Sync(db, path, RenderOptions{})
+	if err != nil || !wrote {
+		t.Fatalf("first Sync must write: wrote=%v err=%v", wrote, err)
+	}
+	wrote, err = Sync(db, path, RenderOptions{})
+	if err != nil || wrote {
+		t.Fatalf("second Sync on an unchanged DB must not write: wrote=%v err=%v", wrote, err)
+	}
+	_, _ = db.Exec(`INSERT INTO events(event_type, payload) VALUES('create','{}')`)
+	wrote, _ = Sync(db, path, RenderOptions{})
+	if !wrote {
+		t.Fatal("a new event changes the header and must be written")
+	}
+}
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	storage.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { storage.Close() })
+	return db
+}
+
+func lintString(t *testing.T, content string) []string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "TASTE.md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return Lint(path)
+}
+
+// TestReimportMarksDirty: pull goes through the event funnel, so the
+// auto-maintained file catches up on the import itself.
+func TestReimportMarksDirty(t *testing.T) {
+	db := openTestDB(t)
+	flushes := 0
+	storage.SetOnDirtyFlush(func(*sql.DB) { flushes++ })
+	t.Cleanup(func() { storage.SetOnDirtyFlush(nil) })
+	path := filepath.Join(t.TempDir(), "TASTE.md")
+	if err := os.WriteFile(path, []byte("# Taste\n\n## Testing\n\n- use table-driven tests. Confidence: 0.40\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := Reimport(db, path)
+	if err != nil || n != 1 {
+		t.Fatalf("Reimport: n=%d err=%v", n, err)
+	}
+	storage.FlushIfDirty()
+	if flushes != 1 {
+		t.Fatalf("Reimport must mark the store dirty (flushes=%d)", flushes)
+	}
+	var events int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='import'`).Scan(&events)
+	if events != 1 {
+		t.Fatalf("expected one import event, got %d", events)
 	}
 }

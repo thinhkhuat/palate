@@ -100,3 +100,31 @@ func TestProposalsBoundary(t *testing.T) {
 		t.Fatalf("promote should create event")
 	}
 }
+
+// TestExtractStatedPreferenceWordBoundary: the trigger must be a real
+// first-person statement; the bare word "preference" (or a negation) is not
+// one. Observed 2026-09-13: "no preference" was stored as a preference.
+func TestExtractStatedPreferenceWordBoundary(t *testing.T) {
+	for _, text := range []string{
+		"just a normal message, no preference",
+		"I have no preference on this",
+		"my preferences are in the file",
+		"preferred stock went up",
+		"I prefer.",
+	} {
+		if stmt, _ := ExtractStatedPreference(text); stmt != "" {
+			t.Errorf("%q must not yield a preference, got %q", text, stmt)
+		}
+	}
+	for text, want := range map[string]string{
+		"I prefer tabs over spaces":                   "I prefer tabs over spaces",
+		"we prefer early returns. Thanks":             "we prefer early returns",
+		"I'd prefer table-driven tests here":          "I'd prefer table-driven tests here",
+		"please always use structured logging first!": "always use structured logging first",
+		"never use panic in library code":             "never use panic in library code",
+	} {
+		if stmt, _ := ExtractStatedPreference(text); stmt != want {
+			t.Errorf("%q: got %q, want %q", text, stmt, want)
+		}
+	}
+}
