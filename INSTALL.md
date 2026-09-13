@@ -40,9 +40,11 @@ a repo-local `config.yaml`). `palate doctor` prints `home: … mode: global`.
 
 **Legacy per-repo layout (0.1.x) keeps working by detection.** A directory that already carries
 `./.palate/palate.db` stays in `mode: legacy-repo` — DB, state and `TASTE.md` under `./.palate/` exactly as before,
-the global home untouched. To fold such a repo into the global store once: `palate push` in the repo, then
-`cd ~ && palate pull <repo>/TASTE.md` (lands as `IMPORTED w≤0.4`, promotable), then remove the repo's `.palate/`
-(back it up first; `backups/` in the home is the convention).
+the global home untouched. To fold such a repo into the global store once, run `palate migrate` in the repo: it
+moves the DB losslessly (events, trust tiers and confidences intact), parks the old `.palate/` under the home's
+`backups/`, and renders `TASTE.md`. It refuses when the global store already holds events — then merge by
+reimport (`palate push` in the repo, `cd ~ && palate pull <repo>/TASTE.md`), which lands rows as `IMPORTED w≤0.4`,
+promotable with `palate promote`.
 
 Config precedence: `--config` > `./config.yaml` > `<home>/config.yaml` > defaults; env overrides `PALATE_HOME`,
 `PALATE_DB_PATH`, `PALATE_RENDER_AUTO=0` (turn the auto TASTE.md off), `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`,

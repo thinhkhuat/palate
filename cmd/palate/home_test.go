@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/thinhkhuat/palate/internal/storage"
 )
 
 // runAllHooks drives the five hook handlers the way a harness does, against
@@ -132,5 +134,62 @@ func TestDoctorReportsModeAndHome(t *testing.T) {
 	out, _ = runCLI(t, "doctor")
 	if !strings.Contains(out, "mode: legacy-repo") {
 		t.Fatalf("doctor must report legacy-repo, got:\n%s", out)
+	}
+}
+
+// TestMigrateMovesLegacyStoreLosslessly: `palate migrate` carries the
+// legacy DB (tiers and confidences included) into the global home, parks
+// the old directory under backups/, and refuses to clobber a global store
+// that already holds events.
+func TestMigrateMovesLegacyStoreLosslessly(t *testing.T) {
+	setupLegacyProject(t)
+	if _, err := runCLI(t, "prefer", "use table-driven tests"); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+	legacyDB := loadConfig().DBPath
+	if _, err := os.Stat(legacyDB); err != nil {
+		t.Fatalf("legacy DB missing: %v", err)
+	}
+
+	out, err := runCLI(t, "migrate")
+	if err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	storage.Close()
+	if _, err := os.Stat(".palate"); !os.IsNotExist(err) {
+		t.Fatal("migrate must park the legacy .palate/ directory")
+	}
+	global := loadConfig()
+	if global.Legacy() {
+		t.Fatal("after migrate the cwd must resolve to the global home")
+	}
+	db := openDB(global)
+	var tier string
+	var conf float64
+	if err := db.QueryRow(`SELECT trust_tier, confidence FROM preferences WHERE statement='use table-driven tests'`).Scan(&tier, &conf); err != nil {
+		t.Fatalf("preference did not survive the move: %v", err)
+	}
+	if tier != "STATED" || conf != 0.4 {
+		t.Fatalf("tier/confidence changed in transit: %s %.2f", tier, conf)
+	}
+	storage.Close()
+	if b, _ := os.ReadFile(global.TastePath()); !strings.Contains(string(b), "use table-driven tests") {
+		t.Fatalf("TASTE.md not rendered in the global home:\n%s", b)
+	}
+	parked, _ := filepath.Glob(filepath.Join(global.BackupDir(), "legacy-*"))
+	if len(parked) != 1 {
+		t.Fatalf("expected the legacy dir parked under backups/, got %v", parked)
+	}
+
+	// a second legacy store must not clobber a global store that has data
+	setupLegacyProject(t)
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(global.Home))) // same global home
+	if _, err := runCLI(t, "prefer", "another repo's taste"); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+	if _, err := runCLI(t, "migrate"); err == nil || !strings.Contains(err.Error(), "already holds") {
+		t.Fatalf("migrate into a populated global store must refuse, got err=%v", err)
 	}
 }

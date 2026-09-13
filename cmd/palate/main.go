@@ -98,6 +98,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cmdReimport())
 	root.AddCommand(cmdPush())
 	root.AddCommand(cmdPull())
+	root.AddCommand(cmdTaste())
+	root.AddCommand(cmdMigrate())
 	root.AddCommand(cmdVerify())
 	root.AddCommand(cmdHook())
 	root.AddCommand(cmdPrefer())
@@ -150,7 +152,7 @@ func cmdDoctor() *cobra.Command {
 			fmt.Printf("config: %s\n", cfgFile)
 			fmt.Printf("home: %s  mode: %s\n", cfg.Home, modeName(cfg))
 			if cfg.Legacy() {
-				fmt.Println("home: legacy per-repo layout — migrate into the global home with: palate push && (cd ~ && palate pull " + filepath.Join(filepath.Dir(cfg.Home), "TASTE.md") + ")")
+				fmt.Println("home: legacy per-repo layout — move it into the global home losslessly with: palate migrate")
 			}
 			fmt.Printf("db: %s\n", cfg.DBPath)
 			fmt.Printf("taste: %s (auto-render %s)\n", cfg.TastePath(), map[bool]string{true: "on", false: "off"}[cfg.Render.Auto])
@@ -500,6 +502,120 @@ func cmdPush() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// cmdTaste re-syncs the auto-maintained TASTE.md from the DB (a DB restored
+// or edited outside Palate leaves the render stale — nothing marked it
+// dirty) and prints it. The slash command /palate:taste calls this.
+func cmdTaste() *cobra.Command {
+	var pathOnly bool
+	c := &cobra.Command{
+		Use:   "taste",
+		Short: "Re-sync and print the auto-maintained TASTE.md",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			if _, err := render.Sync(db, cfg.TastePath(), render.RenderOptions{}); err != nil {
+				return err
+			}
+			if pathOnly {
+				fmt.Println(cfg.TastePath())
+				return nil
+			}
+			b, err := os.ReadFile(cfg.TastePath())
+			if err != nil {
+				return err
+			}
+			fmt.Print(string(b))
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&pathOnly, "path", false, "print only the file path")
+	return c
+}
+
+// cmdMigrate moves a legacy per-repo store (./.palate/) into the global home
+// with its events, tiers and confidences intact, then parks the old directory
+// under <global>/backups/. A TASTE.md round-trip would flatten every row to
+// IMPORTED 0.4, so that path is only suggested when the global store already
+// holds data of its own (a lossless merge of two SQLite stores is out of
+// scope).
+func cmdMigrate() *cobra.Command {
+	return &cobra.Command{
+		Use:          "migrate",
+		Short:        "Move this repo's legacy .palate/ store into the global home (lossless)",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			legacy := loadConfig()
+			if !legacy.Legacy() {
+				return fmt.Errorf("migrate: no legacy ./.palate/palate.db here (mode: %s)", modeName(legacy))
+			}
+			global := config.ForGlobalHome(legacy)
+			if n := eventCount(global.DBPath); n > 0 {
+				return fmt.Errorf("migrate: the global store %s already holds %d events; merge by reimport instead: palate push && (cd ~ && palate pull %s)", global.DBPath, n, filepath.Join(filepath.Dir(legacy.Home), "TASTE.md"))
+			}
+			if err := global.EnsureLayout(); err != nil {
+				return err
+			}
+			if bak, err := storage.BackupBefore(global.DBPath, global.BackupDir(), "migrate"); err != nil {
+				return err
+			} else if bak != "" {
+				fmt.Fprintln(os.Stderr, "backup:", bak)
+			}
+			storage.Close()
+			if err := copyFile(legacy.DBPath, global.DBPath, 0600); err != nil {
+				return fmt.Errorf("copy store: %w", err)
+			}
+			for _, sfx := range []string{"-wal", "-shm"} {
+				_ = os.Remove(global.DBPath + sfx)
+			}
+			parked := filepath.Join(global.BackupDir(), fmt.Sprintf("legacy-%s-%s", filepath.Base(filepath.Dir(legacy.Home)), time.Now().Format("20060102-1504")))
+			if err := os.Rename(legacy.Home, parked); err != nil {
+				return fmt.Errorf("park legacy dir: %w", err)
+			}
+			render.RegisterAuto(global)
+			db, err := storage.Open(global.DBPath)
+			if err != nil {
+				return err
+			}
+			defer storage.Close()
+			if _, err := render.Sync(db, global.TastePath(), render.RenderOptions{}); err != nil {
+				return err
+			}
+			fmt.Printf("migrated %s -> %s (events, tiers and confidences intact)\n", legacy.DBPath, global.DBPath)
+			fmt.Printf("legacy dir parked at %s\n", parked)
+			fmt.Printf("taste: %s\n", global.TastePath())
+			return nil
+		},
+	}
+}
+
+// eventCount returns the number of rows in events for an existing DB, 0 when
+// the file is absent or unreadable — used to tell "fresh global store" from
+// "already in use" without opening the process-wide singleton.
+func eventCount(dbPath string) int {
+	if _, err := os.Stat(dbPath); err != nil {
+		return 0
+	}
+	conn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0
+	}
+	defer conn.Close()
+	var n int
+	if err := conn.QueryRow(`SELECT count(*) FROM events`).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, mode)
 }
 
 func cmdPull() *cobra.Command {

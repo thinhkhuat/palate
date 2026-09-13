@@ -191,6 +191,21 @@ func absHome(p string) string {
 	return p
 }
 
+// ForGlobalHome returns base re-pointed at the global home (PALATE_HOME or
+// DefaultHome) with the legacy flag cleared and the DB derived from it —
+// what a legacy repo would resolve to once its ./.palate/ is gone.
+func ForGlobalHome(base Config) Config {
+	c := base
+	c.legacy = false
+	if v := os.Getenv("PALATE_HOME"); v != "" {
+		c.Home = absHome(v)
+	} else {
+		c.Home = DefaultHome()
+	}
+	c.DBPath = filepath.Join(c.Home, "palate.db")
+	return c
+}
+
 // Legacy reports the per-repo layout (Home is the cwd's .palate, chosen by
 // detection, not by the user).
 func (c Config) Legacy() bool { return c.legacy }
