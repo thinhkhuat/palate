@@ -81,6 +81,11 @@ resolves a binary itself (`PALATE_BIN` → staged per-platform binary → `PATH`
 with `palate hook help` (warns if a workspace-level install is *also* wired —
 see the migration note below) or `claude plugin list` / `codex plugin list`.
 
+> **Plugin update ≠ binary update.** `bin/palate` prefers a `palate` already on `PATH` (`go install`, Homebrew) over building
+> from the plugin's own tree, so after `/plugin marketplace update` the hooks keep running whatever that binary was built from.
+> Refresh it too — `go install github.com/thinhkhuat/palate/cmd/palate@latest` (or `brew upgrade palate`) — or remove it and let the
+> launcher build from the updated tree.
+
 **Migrating from a manual `palate hook install`:** once the plugin is
 installed, retire the workspace-level entries it now duplicates:
 
