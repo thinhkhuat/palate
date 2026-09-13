@@ -110,8 +110,6 @@ func TestStdioGraceTimeoutReleasesEOF(t *testing.T) {
 		t.Fatalf("EOF released after %v, want ≈ grace", el)
 	}
 }
-<<<<<<< Updated upstream
-=======
 
 // slowWriter models a host that has stopped draining stdout.
 type slowWriter struct{ block chan struct{} }
@@ -140,4 +138,3 @@ func TestStdioStalledOutputDoesNotBlockIngestion(t *testing.T) {
 	}
 	close(w.block)
 }
->>>>>>> Stashed changes

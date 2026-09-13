@@ -54,16 +54,12 @@ type stdioGuard struct {
 	out   io.Writer
 	grace time.Duration
 
-<<<<<<< Updated upstream
-	mu       sync.Mutex
-=======
 	// writeMu serialises the SDK's replies against the pump's -32700 lines on
 	// the shared output. It is never held together with mu, so a stalled stdout
 	// consumer cannot stall stdin ingestion.
 	writeMu sync.Mutex
 
 	mu       sync.Mutex    // guards the ledger below only
->>>>>>> Stashed changes
 	pending  int           // requests read minus responses written
 	draining bool          // stdin hit EOF; waiting for pending to reach zero
 	drained  chan struct{} // closed once draining && pending == 0
@@ -101,10 +97,6 @@ func (g *stdioGuard) pump(in io.Reader, pw *io.PipeWriter) {
 // call, newline-terminated) and settles the ledger before forwarding it.
 func (g *stdioGuard) Write(p []byte) (int, error) {
 	g.mu.Lock()
-<<<<<<< Updated upstream
-	defer g.mu.Unlock()
-=======
->>>>>>> Stashed changes
 	if n := countResponses(bytes.TrimSpace(p)); n > 0 {
 		g.pending -= n
 		if g.pending < 0 {
@@ -112,13 +104,10 @@ func (g *stdioGuard) Write(p []byte) (int, error) {
 		}
 		g.signalLocked()
 	}
-<<<<<<< Updated upstream
-=======
 	g.mu.Unlock()
 
 	g.writeMu.Lock()
 	defer g.writeMu.Unlock()
->>>>>>> Stashed changes
 	return g.out.Write(p)
 }
 
