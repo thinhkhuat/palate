@@ -215,10 +215,11 @@ func ApplyAction(conn *sql.DB, cfg config.Config, a Action) error {
 		if err := conn.QueryRow(`SELECT statement FROM preferences WHERE id=? AND valid_until IS NULL`, a.ID).Scan(&from); err != nil {
 			return err
 		}
-		if _, err := conn.Exec(`UPDATE preferences SET statement=? WHERE id=?`, a.Statement, a.ID); err != nil {
+		// A rewrite may also re-file the row: an empty category keeps the current one.
+		if _, err := conn.Exec(`UPDATE preferences SET statement=?, category=COALESCE(NULLIF(?, ''), category) WHERE id=?`, a.Statement, strings.TrimSpace(a.Category), a.ID); err != nil {
 			return err
 		}
-		return storage.AppendEvent(conn, "consolidate_rewrite", fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"reason":%q}`, a.ID, from, a.Statement, a.Reason))
+		return storage.AppendEvent(conn, "consolidate_rewrite", fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"category":%q,"reason":%q}`, a.ID, from, a.Statement, strings.TrimSpace(a.Category), a.Reason))
 	case "rescore":
 		if a.ID == "" {
 			return fmt.Errorf("rescore needs id")

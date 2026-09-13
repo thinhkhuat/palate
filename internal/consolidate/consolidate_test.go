@@ -213,3 +213,24 @@ func TestConsolidateDue(t *testing.T) {
 		t.Fatal("every_events=0 disables auto-fire")
 	}
 }
+
+// A rewrite carrying a category re-files the row; without one the category stays.
+func TestRewriteCategory(t *testing.T) {
+	db, cfg := testStore(t)
+	ids := seed(t, db, cfg, "Prefers commits pushed without asking during an arc")
+	if err := ApplyAction(db, cfg, Action{Type: "rewrite", ID: ids[0], Statement: "Wants commits pushed autonomously during a work arc.", Category: "Workflow", Reason: "re-file"}); err != nil {
+		t.Fatal(err)
+	}
+	var cat, stmt string
+	_ = db.QueryRow(`SELECT category, statement FROM preferences WHERE id=?`, ids[0]).Scan(&cat, &stmt)
+	if cat != "Workflow" || stmt != "Wants commits pushed autonomously during a work arc." {
+		t.Fatalf("rewrite with category: got %q / %q", cat, stmt)
+	}
+	if err := ApplyAction(db, cfg, Action{Type: "rewrite", ID: ids[0], Statement: "Wants commits pushed autonomously.", Reason: "shorter"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRow(`SELECT category FROM preferences WHERE id=?`, ids[0]).Scan(&cat)
+	if cat != "Workflow" {
+		t.Fatalf("rewrite without category must keep it, got %q", cat)
+	}
+}

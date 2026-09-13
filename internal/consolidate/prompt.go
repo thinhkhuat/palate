@@ -10,8 +10,11 @@ Return the smallest set of actions that makes the profile cleaner and truer:
 - "merge": two or more ids say the same thing → one statement (keep the
   user's meaning, third person), the category, and a confidence that reflects
   the combined evidence. {"type":"merge","ids":["…","…"],"statement":"…","category":"…","confidence":0.0,"reason":"…"}
-- "rewrite": a statement is vague, first-person, or badly worded but correct →
-  {"type":"rewrite","id":"…","statement":"…","reason":"…"}
+- "rewrite": a statement is vague, first-person, or badly worded but correct, or
+  sits in the wrong category (most rows filed under "General" belong in
+  Workflow, Tooling, Communication, Testing, …) →
+  {"type":"rewrite","id":"…","statement":"…","category":"…","reason":"…"}
+  ("category" is optional; omit it to keep the current one)
 - "rescore": the confidence does not match the evidence (many reinforcements
   but low confidence, or a single hedged remark scored high) →
   {"type":"rescore","id":"…","confidence":0.0,"reason":"…"}

@@ -179,3 +179,45 @@ func TestApplyJudgedRelations(t *testing.T) {
 		t.Fatalf("unknown target must degrade to new: %+v", unk)
 	}
 }
+
+// Re-confirming a preference must raise its confidence, however long ago it
+// was last touched. With the 0.3.x default (half-life 168 h) a 0.80 row
+// confirmed after three weeks decayed to the floor first and came back at
+// 0.26; decay is now off by default (decisions row 18).
+func TestReconfirmAfterWeeksRaisesConfidenceByDefault(t *testing.T) {
+	db, cfg := testDB(t)
+	if cfg.HalfLifeHours != 0 {
+		t.Fatalf("default half_life_hours must be 0 (decay off), got %v", cfg.HalfLifeHours)
+	}
+	base, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers early returns.", Category: "Error Handling", Confidence: 0.80, Relation: RelationNew, By: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-21 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec(`UPDATE preferences SET last_reinforced_at=? WHERE id=?`, old, base.ID); err != nil {
+		t.Fatal(err)
+	}
+	same, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers early returns.", Category: "Error Handling", Confidence: 0.8, Relation: RelationSame, TargetID: base.ID, By: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same.Confidence <= 0.80 {
+		t.Fatalf("re-confirmation lowered confidence: 0.80 -> %.2f", same.Confidence)
+	}
+}
+
+// The knob still works: an explicit half_life_hours restores time decay.
+func TestHalfLifeKnobRestoresDecay(t *testing.T) {
+	db, cfg := testDB(t)
+	cfg.HalfLifeHours = 168
+	base, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers guard clauses.", Category: "Error Handling", Confidence: 0.80, Relation: RelationNew, By: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-21 * 24 * time.Hour).Format(time.RFC3339)
+	_, _ = db.Exec(`UPDATE preferences SET last_reinforced_at=? WHERE id=?`, old, base.ID)
+	same, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers guard clauses.", Category: "Error Handling", Confidence: 0.8, Relation: RelationSame, TargetID: base.ID, By: "test"})
+	if same.Confidence >= 0.80 {
+		t.Fatalf("with half_life_hours=168 decay should apply, got %.2f", same.Confidence)
+	}
+}

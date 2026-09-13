@@ -210,3 +210,84 @@ func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 		t.Fatalf("expected exactly 1 preference with LLM unconfigured, got %d: %+v", len(prefs2), prefs2)
 	}
 }
+
+
+// SessionStart tells the user what was learned since the previous session
+// (Command Code's inline "taste learned" notices), and says nothing when
+// nothing changed. The first run on a home only seeds the cursor.
+func TestSessionStartNoticeReportsNewPreferences(t *testing.T) {
+	setupTempProject(t)
+	first := runHook(t, `{"session_id":"n1","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	if strings.Contains(first, "systemMessage") {
+		t.Fatalf("first run must only seed the cursor, got %s", first)
+	}
+	if _, err := runCLI(t, "prefer", "Prefers notices about what was learned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "prefer", "Prefers a second notice line"); err != nil {
+		t.Fatal(err)
+	}
+	out := runHook(t, `{"session_id":"n2","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	var parsed struct {
+		SystemMessage string `json:"systemMessage"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
+		t.Fatalf("hook output not JSON: %v\n%s", err, out)
+	}
+	if !strings.Contains(parsed.SystemMessage, "learned 2") || !strings.Contains(parsed.SystemMessage, "Prefers notices about what was learned") {
+		t.Fatalf("notice missing the new preferences: %q", parsed.SystemMessage)
+	}
+}
+
+func TestSessionStartNoticeSilentWhenNothingNew(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "prefer", "Prefers silence when nothing changed"); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, `{"session_id":"q1","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	out := runHook(t, `{"session_id":"q2","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	if strings.Contains(out, "systemMessage") {
+		t.Fatalf("no new events, yet a notice was emitted: %s", out)
+	}
+	if !strings.Contains(out, "additionalContext") {
+		t.Fatalf("profile block still expected: %s", out)
+	}
+}
+
+// A compaction restarts the same session, so it must not claim "since your
+// last session"; the next real start still reports the delta.
+func TestSessionStartNoticeSkipsCompaction(t *testing.T) {
+	setupTempProject(t)
+	runHook(t, `{"session_id":"c0","transcript_path":"/tmp/none.jsonl","source":"startup"}`, "hook", "session-start")
+	if _, err := runCLI(t, "prefer", "Prefers the notice to wait past compaction"); err != nil {
+		t.Fatal(err)
+	}
+	mid := runHook(t, `{"session_id":"c0","transcript_path":"/tmp/none.jsonl","source":"compact"}`, "hook", "session-start")
+	if strings.Contains(mid, "systemMessage") {
+		t.Fatalf("compaction must not emit the notice: %s", mid)
+	}
+	next := runHook(t, `{"session_id":"c1","transcript_path":"/tmp/none.jsonl","source":"startup"}`, "hook", "session-start")
+	if !strings.Contains(next, "learned 1") {
+		t.Fatalf("next real start must still report the delta: %s", next)
+	}
+}
+
+// Consolidation housekeeping is reported as consolidated, never as "New:".
+func TestSessionStartNoticeBucketsConsolidation(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "prefer", "Prefers merged rows to be reported honestly"); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, `{"session_id":"m0","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	cfg := loadConfig()
+	db := openDB(cfg)
+	defer storage.Close()
+	if err := storage.AppendEvent(db, "consolidate_rewrite", `{"id":"x","from":"a","to":"b","category":"","reason":"test"}`); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+	out := runHook(t, `{"session_id":"m1","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	if !strings.Contains(out, "consolidated 1") || strings.Contains(out, "New:") {
+		t.Fatalf("consolidation must be its own bucket without a New: quote: %s", out)
+	}
+}

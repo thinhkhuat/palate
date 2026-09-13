@@ -44,6 +44,27 @@ type RenderOptions struct {
 func Render(conn *sql.DB, opts RenderOptions) (string, error) {
 	var lastEvent int64
 	_ = conn.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&lastEvent)
+	body, n, err := Body(conn, opts)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("<!-- auto-maintained by palate after event #%d; edit with `palate prefer` / `palate forget`, not by hand -->\n", lastEvent))
+	b.WriteString("# Taste\n\n")
+	if n == 0 {
+		b.WriteString("_No preferences learned yet._\n")
+		return b.String(), nil
+	}
+	b.WriteString(body)
+	return b.String(), nil
+}
+
+// Body is the profile without the header: "## Category" sections, one
+// "- statement. Confidence: 0.xx (source, TIER)" bullet per preference. It is
+// the same bytes TASTE.md carries and the same bytes the SessionStart prewarm
+// injects — one artefact, two readers (Command Code parity, decisions row 17).
+// n is the number of preferences rendered.
+func Body(conn *sql.DB, opts RenderOptions) (body string, n int, err error) {
 	q := `SELECT category, statement, confidence, source, trust_tier FROM preferences WHERE valid_until IS NULL`
 	if !opts.IncludeConflicted {
 		q += ` AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)`
@@ -51,7 +72,7 @@ func Render(conn *sql.DB, opts RenderOptions) (string, error) {
 	q += ` ORDER BY category ASC, confidence DESC, statement ASC`
 	rows, err := conn.Query(q)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer rows.Close()
 	type row struct {
@@ -72,15 +93,10 @@ func Render(conn *sql.DB, opts RenderOptions) (string, error) {
 			seen[cat] = true
 		}
 		byCat[cat] = append(byCat[cat], r)
+		n++
 	}
 	sort.Strings(cats)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("<!-- auto-maintained by palate after event #%d; edit with `palate prefer` / `palate forget`, not by hand -->\n", lastEvent))
-	b.WriteString("# Taste\n\n")
-	if len(cats) == 0 {
-		b.WriteString("_No preferences learned yet._\n")
-		return b.String(), nil
-	}
 	for _, cat := range cats {
 		b.WriteString(fmt.Sprintf("## %s\n\n", cat))
 		for _, p := range byCat[cat] {
@@ -88,7 +104,7 @@ func Render(conn *sql.DB, opts RenderOptions) (string, error) {
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), nil
+	return b.String(), n, nil
 }
 
 func WriteFile(conn *sql.DB, path string, opts RenderOptions) error {

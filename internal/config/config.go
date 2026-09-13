@@ -121,7 +121,7 @@ func Default() Config {
 	return Config{
 		DBPath:        ".palate/palate.db",
 		CFloor:        0.1,
-		HalfLifeHours: 168,
+		HalfLifeHours: 0, // decay off: confidence moves only on evidence (decisions row 18)
 		LearningRate:  0.3,
 		Weights: Weights{
 			ExplicitCorrection: 1.0,
@@ -134,7 +134,7 @@ func Default() Config {
 			Imported:           0.4,
 		},
 		TokenBudgets: TokenBudgets{
-			PrewarmSession: 500,
+			PrewarmSession: 2000, // whole profile; only ever drops whole lines (decisions row 17)
 			PrewarmGoal:    200,
 			Recall:         1000,
 			IndexLines:     200,

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/render"
 )
 
 type Block struct {
@@ -29,42 +30,66 @@ func truncateToTokens(s string, budget int) string {
 	return s
 }
 
+// SessionPrewarm injects the whole active profile — the same bytes as
+// TASTE.md's body — so the agent sees every preference the user can see
+// (Command Code parity: its <taste> section is the complete file, unranked).
+// The budget only ever drops whole lines, and when it does the block says how
+// many were left out and where the full file lives.
 func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
-	rows, err := conn.Query(`
-		SELECT category, statement, confidence, importance, trust_tier, provenance, last_verified_at
-		FROM preferences
-		WHERE valid_until IS NULL
-		  AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
-		ORDER BY confidence * importance DESC, id ASC
-		LIMIT 20`)
+	body, n, err := render.Body(conn, render.RenderOptions{})
 	if err != nil {
 		return Block{Scope: "session"}, err
 	}
-	defer rows.Close()
-	var lines []string
-	for rows.Next() {
-		var cat, stmt string
-		var conf, imp float64
-		var trustTier, provenance, lastVerified sql.NullString
-		if err := rows.Scan(&cat, &stmt, &conf, &imp, &trustTier, &provenance, &lastVerified); err != nil {
-			continue
-		}
-		badge := ""
-		if trustTier.Valid && trustTier.String == "IMPORTED" {
-			badge = " [IMPORTED]"
-		}
-		marker := ""
-		if trustTier.Valid && trustTier.String == "DISTILLED" {
-			marker = ", distilled"
-		}
-		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f%s)%s", cat, stmt, conf, marker, badge))
-	}
-	if len(lines) == 0 {
+	if n == 0 {
 		return Block{Content: "", Tokens: 0, Scope: "session"}, nil
 	}
-	content := "<palate-prewarm scope=\"session\">\n" + strings.Join(lines, "\n") + "\n</palate-prewarm>"
-	content = truncateToTokens(content, cfg.TokenBudgets.PrewarmSession)
+	tail := "</palate-prewarm>"
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	budget := cfg.TokenBudgets.PrewarmSession
+	// The header is sized before fitting so the budget accounts for it; the
+	// wording differs once lines are dropped so the block never claims "all".
+	headFor := func(shown int) string {
+		if shown < n {
+			return fmt.Sprintf("<palate-prewarm scope=\"session\">\nYour learned taste profile — %d preferences, %d shown here (token budget %d), all of them in %s. Apply them by default; the current request wins.\n", n, shown, budget, cfg.TastePath())
+		}
+		return fmt.Sprintf("<palate-prewarm scope=\"session\">\nYour learned taste profile — all %d preferences, also in %s. Apply them by default; the current request wins.\n", n, cfg.TastePath())
+	}
+	// Reserve the header (its truncated form is the longer one), the closing
+	// tag, the two joining newlines and one "… N more" line.
+	overhead := estimateTokens(headFor(0)) + estimateTokens(tail) + 2 + estimateTokens(fmt.Sprintf("… %d more preferences not shown; read the full profile in %s", n, cfg.TastePath()))
+	kept, dropped := fitLines(lines, budget-overhead)
+	if dropped > 0 {
+		kept = append(kept, fmt.Sprintf("… %d more preferences not shown; read the full profile in %s", dropped, cfg.TastePath()))
+	}
+	content := headFor(n-dropped) + strings.Join(kept, "\n") + "\n" + tail
 	return Block{Content: content, Tokens: estimateTokens(content), Scope: "session"}, nil
+}
+
+// fitLines keeps leading lines while they fit the budget. A "## Category"
+// heading with no bullets left under it is dropped too. dropped counts only
+// preference bullets, since that is the number the reader cares about.
+func fitLines(lines []string, budget int) (kept []string, dropped int) {
+	used := 0
+	i := 0
+	for ; i < len(lines); i++ {
+		t := estimateTokens(lines[i]) + 1
+		if used+t > budget {
+			break
+		}
+		used += t
+		kept = append(kept, lines[i])
+	}
+	for _, l := range lines[i:] {
+		if strings.HasPrefix(l, "- ") {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		for len(kept) > 0 && (strings.HasPrefix(kept[len(kept)-1], "## ") || strings.TrimSpace(kept[len(kept)-1]) == "") {
+			kept = kept[:len(kept)-1]
+		}
+	}
+	return kept, dropped
 }
 
 var lastGoalHash string
@@ -105,7 +130,7 @@ func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Bl
 	for _, kw := range keywords {
 		like := "%" + kw + "%"
 		rows, err := conn.Query(`
-			SELECT category, statement, confidence FROM preferences
+			SELECT category, statement, confidence, source, trust_tier FROM preferences
 			WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
 			  AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
 			ORDER BY confidence DESC LIMIT 5`, like, like)
@@ -114,12 +139,14 @@ func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Bl
 			continue
 		}
 		for rows.Next() {
-			var cat, stmt string
+			var cat, stmt, source, tier string
 			var conf float64
-			if err := rows.Scan(&cat, &stmt, &conf); err != nil {
+			if err := rows.Scan(&cat, &stmt, &conf, &source, &tier); err != nil {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("- [%s] %s", cat, stmt))
+			// Same bullet shape as the session block and TASTE.md, with the
+			// category inline since this block has no headings.
+			lines = append(lines, fmt.Sprintf("- [%s] %s. Confidence: %.2f (%s, %s)", cat, strings.TrimSuffix(stmt, "."), conf, source, tier))
 		}
 		rows.Close()
 		if len(lines) > 0 {

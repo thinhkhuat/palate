@@ -2,6 +2,7 @@ package prewarm
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,17 +22,72 @@ func openMem(t *testing.T) (*sql.DB, config.Config) {
 	return db, config.Default()
 }
 
-func TestSessionPrewarmBudget(t *testing.T) {
+// Under budget the block carries every active preference, grouped under its
+// "## Category" heading, in the same line shape as TASTE.md.
+func TestSessionPrewarmCarriesWholeProfile(t *testing.T) {
 	db, cfg := openMem(t)
-	for i := 0; i < 30; i++ {
-		_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "pref number test", Category: "General"}, nil)
+	for i := 0; i < 25; i++ {
+		cat := "Testing"
+		if i%2 == 1 {
+			cat = "Workflow"
+		}
+		_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: fmt.Sprintf("whole profile statement number %d", i), Category: cat}, nil)
 	}
+	block, err := SessionPrewarm(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 25; i++ {
+		if !strings.Contains(block.Content, fmt.Sprintf("whole profile statement number %d.", i)) {
+			t.Fatalf("statement %d missing from the block:\n%s", i, block.Content)
+		}
+	}
+	for _, h := range []string{"## Testing", "## Workflow", "all 25 preferences"} {
+		if !strings.Contains(block.Content, h) {
+			t.Fatalf("block missing %q:\n%s", h, block.Content)
+		}
+	}
+	if strings.Contains(block.Content, "more preferences not shown") {
+		t.Fatalf("under budget, nothing should be dropped:\n%s", block.Content)
+	}
+}
+
+// Over budget the block drops whole bullets only and says how many, never a
+// partial line (the 0.3.x cut landed mid-sentence).
+func TestSessionPrewarmBudgetDropsWholeLines(t *testing.T) {
+	db, cfg := openMem(t)
+	for i := 0; i < 40; i++ {
+		_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: fmt.Sprintf("budget statement number %d with some padding words to cost tokens", i), Category: "General"}, nil)
+	}
+	cfg.TokenBudgets.PrewarmSession = 300
 	block, err := SessionPrewarm(db, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if block.Tokens > cfg.TokenBudgets.PrewarmSession+10 {
 		t.Fatalf("session prewarm over budget: %d > %d", block.Tokens, cfg.TokenBudgets.PrewarmSession)
+	}
+	if !strings.Contains(block.Content, "more preferences not shown") {
+		t.Fatalf("over budget, the block must say what it dropped:\n%s", block.Content)
+	}
+	if strings.Contains(block.Content, "all 40 preferences") || !strings.Contains(block.Content, "40 preferences, ") {
+		t.Fatalf("a truncated block must not claim \"all\":\n%s", block.Content)
+	}
+	for _, l := range strings.Split(block.Content, "\n") {
+		if strings.HasPrefix(l, "- ") && !strings.Contains(l, "Confidence: ") {
+			t.Fatalf("partial bullet leaked: %q", l)
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(block.Content), "</palate-prewarm>") {
+		t.Fatalf("block not closed:\n%s", block.Content)
+	}
+}
+
+func TestSessionPrewarmEmptyProfile(t *testing.T) {
+	db, cfg := openMem(t)
+	block, err := SessionPrewarm(db, cfg)
+	if err != nil || block.Content != "" || block.Tokens != 0 {
+		t.Fatalf("empty profile must inject nothing, got %+v err=%v", block, err)
 	}
 }
 
@@ -93,11 +149,11 @@ func TestPrewarmMarksDistilled(t *testing.T) {
 		t.Fatalf("prewarm content missing the distilled statement: %q", block.Content)
 	}
 	distilledLine := lineContaining(block.Content, "Prefers table-driven tests.")
-	if !strings.Contains(distilledLine, ", distilled)") {
-		t.Fatalf("distilled row missing marker: %q", distilledLine)
+	if !strings.Contains(distilledLine, ", DISTILLED)") {
+		t.Fatalf("distilled row missing tier: %q", distilledLine)
 	}
 	statedLine := lineContaining(block.Content, "use early returns over nested ifs")
-	if strings.Contains(statedLine, "distilled") {
+	if strings.Contains(statedLine, "DISTILLED") {
 		t.Fatalf("STATED row must not carry the distilled marker: %q", statedLine)
 	}
 }

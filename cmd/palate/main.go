@@ -921,6 +921,7 @@ func cmdHook() *cobra.Command {
 			var input struct {
 				SessionID      string `json:"session_id"`
 				TranscriptPath string `json:"transcript_path"`
+				Source         string `json:"source"` // startup | resume | clear | compact
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
 			cfg := loadConfig()
@@ -943,15 +944,25 @@ func cmdHook() *cobra.Command {
 					_ = spawnConsolidate(hookBinaryPath())
 				}
 			}
-			block, err := prewarm.SessionPrewarm(db, cfg)
-			if err != nil || block.Content == "" {
-				return nil
+			out := map[string]interface{}{}
+			// What changed since the previous session travels as systemMessage
+			// (a conversation notice), the profile itself as additionalContext.
+			// A compaction restarts the same session; "since your last session"
+			// would be wrong there, so the notice waits for the next real start.
+			if input.Source != "compact" {
+				if notice := learnedSinceNotice(db, cfg); notice != "" {
+					out["systemMessage"] = notice
+				}
 			}
-			out := map[string]interface{}{
-				"hookSpecificOutput": map[string]interface{}{
+			block, err := prewarm.SessionPrewarm(db, cfg)
+			if err == nil && block.Content != "" {
+				out["hookSpecificOutput"] = map[string]interface{}{
 					"hookEventName":     "SessionStart",
 					"additionalContext": block.Content,
-				},
+				}
+			}
+			if len(out) == 0 {
+				return nil
 			}
 			b, _ := json.Marshal(out)
 			fmt.Println(string(b))

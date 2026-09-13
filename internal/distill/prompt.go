@@ -37,7 +37,7 @@ in PREVIOUSLY ANALYZED is not evidence.
 Respond with ONLY a JSON object, no markdown fence, no prose before or after:
   {"preferences": [
     {"statement": "<one durable preference, third person, e.g. \"Prefers table-driven tests.\">",
-     "category": "<Testing|Imports|Error Handling|Naming|Types|Async|General|...>",
+     "category": "<Testing|Imports|Error Handling|Naming|Types|Async|Formatting|Tooling|Workflow|Communication|General — or a better short one>",
      "confidence": <0.0-1.0>,
      "evidence": "<short quote or paraphrase from NEW evidence backing this>"}
   ]}

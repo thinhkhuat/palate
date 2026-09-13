@@ -3,7 +3,7 @@
 # home: ~/.claude/palate
 # db_path: defaults to <home>/palate.db; set only to move the DB file itself (PALATE_DB_PATH overrides)
 c_floor: 0.1
-half_life_hours: 168
+half_life_hours: 0     # 0 = no time decay (default); e.g. 168 to halve untouched confidence weekly
 learning_rate: 0.3
 weights:
   explicit_correction: 1.0
@@ -15,7 +15,7 @@ weights:
   model_edit: 0.4
   imported: 0.4
 token_budgets:
-  prewarm_session: 500
+  prewarm_session: 2000   # whole profile at SessionStart; lines are only ever dropped whole
   prewarm_goal: 200
   recall: 1000
   index_lines: 200

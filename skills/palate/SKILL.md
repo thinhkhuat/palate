@@ -6,8 +6,9 @@ description: Apply the user's learned coding taste (style, naming, testing habit
 # Palate — taste contract
 
 Palate observes how you edit, correct, and state preferences, scores each one
-with a confidence that decays and reinforces over time, and pushes the
-current taste profile back into this session via `SessionStart` /
+with a confidence that moves only on evidence (reinforced when confirmed,
+weakened when contradicted), and pushes the whole current profile into this
+session at `SessionStart` (the same lines as `TASTE.md`) plus intent-scoped
 `UserPromptSubmit` prewarm blocks (`<palate-prewarm scope="...">…</palate-prewarm>`)
 and the `palate_recall` MCP tool.
 
@@ -33,8 +34,8 @@ overwritten on the next write). Instead, call the
 matching MCP tool: with a gateway configured the model judges the statement
 (wording, category, confidence, and whether it is new, the same as, a
 refinement of, or a contradiction of a stored row) and the tool reply shows
-the verdict; without one the built-in weights apply. Either way it survives
-decay/reinforcement:
+the verdict; without one the built-in weights apply. Either way it is kept and
+reinforced on the next confirmation:
 
 | User says | Call |
 |---|---|

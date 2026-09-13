@@ -6,7 +6,7 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 
 | Path | Command | When to use |
 |------|---------|-------------|
-| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.3.1` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
+| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.4.0` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
 | From source | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ and git access to the private repo |
 | Agent (no prompt) | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest && palate init && palate doctor` | CI / agent bootstrap — single shot, no TTY |
 
@@ -53,7 +53,7 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 | Harness | Capture capability (honest) | Injection path | Install hint |
 |---------|----------------------------|----------------|--------------|
-| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart ~500 tok + UserPromptSubmit `additionalContext` ~200 tok) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
+| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the whole profile, 2000-tok budget dropping whole lines only + UserPromptSubmit `additionalContext` ~200 tok; SessionStart also posts a `systemMessage` with what was learned since last time) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **Command Code** | hook-based learning (mirrors Claude Code via `~/.commandcode`) | same as Claude Code | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **ZCode** | hook-based learning (SessionStart / UserPromptSubmit / PostToolUse / Stop — no PreCompact event exists) | push prewarm (strict-JSON `additionalContext`) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **OMP (oh-my-pi)** | recall-only (hooks unverified) | MCP recall (`palate serve`) | [§2.2](#22-omp-oh-my-pi--hermes--recall-only-until-verified) |
@@ -263,7 +263,7 @@ Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
 | `model_edit` | 0.4 | weakest |
 | `llm_proposal` | — | never deterministic until `palate promote --as` |
 
-Update: `c ← decay(c, c_floor, half_life=168h, Δt)`, `reinforce c + (1-c)·w·0.3`, `weaken max(c_floor, c·(1-w·0.3))` on contradiction (negation/antonym, same-category scan; loser hidden, winner shown in a `conflicts` row), clamp `[c_floor,1.0]`, `last_reinforced_at`+`reinforcement_count` bump. New pref: `max(c_floor, w·0.5)`; `llm_distilled` seeds at the model's confidence clamped to `[c_floor, 0.9]`. Recall replays decay pinned to `--as-of` (RFC3339); `--include-conflicted` shows hidden losers. Freshness tiers (`freshness.enabled`, T1/T2/T3 weights) multiply the decayed score when enabled.
+Update: `reinforce c + (1-c)·w·0.3` on confirmation, `weaken max(c_floor, c·(1-w·0.3))` on contradiction (negation/antonym, same-category scan; loser hidden, winner shown in a `conflicts` row), clamp `[c_floor,1.0]`, `last_reinforced_at`+`reinforcement_count` bump. New pref: `max(c_floor, w·0.5)`; `llm_distilled` seeds at the model's confidence clamped to `[c_floor, 0.9]`. Time decay is off by default (`half_life_hours: 0`; set e.g. `168` to halve an untouched row weekly — the old default made a re-confirmation after three weeks *lower* a 0.80 row to 0.26). Recall replays events pinned to `--as-of` (RFC3339); `--include-conflicted` shows hidden losers. Freshness tiers (`freshness.enabled`, T1/T2/T3 weights) multiply the decayed score when enabled.
 
 ## 5. LLM gateway — the taste brain
 
