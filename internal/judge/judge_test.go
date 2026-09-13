@@ -96,6 +96,7 @@ func TestHeuristicJudgeMatchesApplySignal(t *testing.T) {
 		{learn.SignalExplicitAccept, "handle errors with wrapped context"},
 		{learn.SignalExplicitCorrection, "prefer early returns over nested ifs"},
 		{learn.SignalImported, "import only what is used"},
+		{learn.SignalExplicitPrefer, "never use table-driven tests"}, // contradiction of the first row
 	}
 	oldDB := testDB(t)
 	for _, s := range script {
@@ -112,10 +113,16 @@ func TestHeuristicJudgeMatchesApplySignal(t *testing.T) {
 		}
 	}
 	newRows := shape(t, newDB)
-	// imports differ by design: Reimport seeded 0.4 directly, ApplySignal 0.2 — the judge keeps Reimport's 0.4
+	// Two documented, deliberate differences from the old path:
+	//  - imports: Reimport seeded 0.4 directly, ApplySignal 0.2 — the judge keeps Reimport's 0.4;
+	//  - the contradicting row's source: insertConflict hardcoded "stated_preference";
+	//    the judge records the real signal. Everything else must match byte for byte.
 	for i := range oldRows {
 		if strings.Contains(oldRows[i], "|imported|") {
 			oldRows[i] = strings.Replace(oldRows[i], "|0.20|", "|0.40|", 1)
+		}
+		if strings.HasPrefix(oldRows[i], "Testing|never use table-driven tests|") {
+			oldRows[i] = strings.Replace(oldRows[i], "|stated_preference|", "|explicit_prefer|", 1)
 		}
 	}
 	if strings.Join(oldRows, "\n") != strings.Join(newRows, "\n") {
@@ -178,14 +185,17 @@ func TestLLMJudgeRelations(t *testing.T) {
 		t.Fatalf("refine event missing: %d", refines)
 	}
 
+	var before2 int
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&before2)
 	p, a, _ = Apply(context.Background(), db, cfg, Input{Statement: "one assertion per test", Signal: learn.SignalExplicitPrefer}, "")
-	if a.Relation != learn.RelationContradicts || p.ID == seed.ID {
-		t.Fatalf("contradicts must insert the new side: %+v %+v", p, a)
+	if a.Relation != learn.RelationContradicts || p.ID == seed.ID || p.Statement != "Prefers one assertion per test function." || p.Confidence != 0.7 {
+		t.Fatalf("contradicts must insert the judged new side: %+v %+v", p, a)
 	}
-	var conflicts int
+	var conflicts, after2 int
 	_ = db.QueryRow(`SELECT count(*) FROM conflicts WHERE resolved_at IS NULL`).Scan(&conflicts)
-	if conflicts != 1 {
-		t.Fatalf("contradicts must open a conflict: %d", conflicts)
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&after2)
+	if conflicts != 1 || after2 != before2+1 {
+		t.Fatalf("contradicts must open one conflict and add exactly one row: conflicts=%d rows %d→%d", conflicts, before2, after2)
 	}
 
 	_, a, _ = Apply(context.Background(), db, cfg, Input{Statement: "something", Signal: learn.SignalExplicitPrefer}, "")

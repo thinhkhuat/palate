@@ -168,7 +168,7 @@ func handleCorrect(ctx context.Context, req *mcp.CallToolRequest, in CorrectInpu
 	if fail != nil {
 		return fail, nil, nil
 	}
-	if _, err := judge.Correct(context.Background(), db, cfg, c); err != nil {
+	if _, _, err := judge.Correct(context.Background(), db, cfg, c); err != nil {
 		return errResult(err.Error()), nil, nil
 	}
 	storage.BumpHit(db, "explicit_correction")
@@ -184,12 +184,12 @@ func recordStatement(stmt string, sig learn.SignalType, counter, label string) (
 	if fail != nil {
 		return fail, nil, nil
 	}
-	_, a, err := judge.Apply(context.Background(), db, cfg, judge.Input{Statement: stmt, Signal: sig}, "")
+	p, a, err := judge.Apply(context.Background(), db, cfg, judge.Input{Statement: stmt, Signal: sig}, "")
 	if err != nil {
 		return errResult(err.Error()), nil, nil
 	}
 	storage.BumpHit(db, counter)
-	return textResult(fmt.Sprintf("%s recorded: %s (%s, %s, c=%.2f)", label, a.Statement, a.Category, a.Relation, a.Confidence)), nil, nil
+	return textResult(fmt.Sprintf("%s recorded: %s (%s)", label, p.Statement, judge.Verdict(p, a))), nil, nil
 }
 
 func handlePrefer(ctx context.Context, req *mcp.CallToolRequest, in StatementInput) (*mcp.CallToolResult, interface{}, error) {

@@ -34,6 +34,7 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 		SELECT category, statement, confidence, importance, trust_tier, provenance, last_verified_at
 		FROM preferences
 		WHERE valid_until IS NULL
+		  AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
 		ORDER BY confidence * importance DESC, id ASC
 		LIMIT 20`)
 	if err != nil {
@@ -106,6 +107,7 @@ func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Bl
 		rows, err := conn.Query(`
 			SELECT category, statement, confidence FROM preferences
 			WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
+			  AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
 			ORDER BY confidence DESC LIMIT 5`, like, like)
 		if err != nil {
 			qerr = err

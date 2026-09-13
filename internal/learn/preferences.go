@@ -579,9 +579,24 @@ func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Pr
 			_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1 WHERE id=?`, c, now, target.ID)
 			_ = storage.AppendEvent(conn, "weaken", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"by":%q}`, target.ID, c, a.By), sig.Evidence))
 		}
-		_ = insertConflict(conn, target.ID, a.Statement, w, cfg, now)
+		// The new side is stored exactly once, with the judged wording,
+		// category and confidence, and linked to the target as a conflict.
+		p, err := insertJudgedRow(conn, cfg, sig, a, now)
+		if err != nil {
+			return nil, err
+		}
+		cid := newID()
+		if _, err := conn.Exec(`INSERT INTO conflicts(id, preference_id, conflicting_id, reason) VALUES(?,?,?,?)`, cid, target.ID, p.ID, "contradiction"); err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
-	// new (or contradicts: the new side is stored as its own row)
+	return insertJudgedRow(conn, cfg, sig, a, now)
+}
+
+// insertJudgedRow stores a judged statement as a fresh row at the clamped
+// confidence, tier by signal, provenance naming the judge.
+func insertJudgedRow(conn *sql.DB, cfg config.Config, sig Signal, a Assessment, now string) (*Preference, error) {
 	conf := ClampConfidence(a.Confidence, cfg.CFloor)
 	id := newID()
 	prov, _ := json.Marshal([]string{string(sig.Type), "judged:" + a.By})

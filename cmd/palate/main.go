@@ -343,11 +343,21 @@ func cmdSleep() *cobra.Command {
 			defer storage.Close()
 			n, err := storage.Sleep(db)
 			if err == nil && cfg.LLMConfigured() {
-				if gw, ok := distill.NewGatewayFromEnv(cfg); ok {
-					if rep, cerr := consolidate.Run(cmd.Context(), db, cfg, gw); cerr != nil {
-						fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
+				// Same rules as the verb and the auto-fire: only when the
+				// watermark says a pass is due, and never concurrently with
+				// another learn/consolidate process.
+				if _, _, due := consolidate.Due(db, cfg); due {
+					if release, locked := distill.AcquireLearnLock(learnLockPath(cfg)); locked {
+						if gw, ok := distill.NewGatewayFromEnv(cfg); ok {
+							if rep, cerr := consolidate.Run(cmd.Context(), db, cfg, gw); cerr != nil {
+								fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
+							} else {
+								fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
+							}
+						}
+						release()
 					} else {
-						fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
+						fmt.Fprintln(os.Stderr, "sleep: consolidation skipped — another learn/consolidate pass holds the lock")
 					}
 				}
 			}
@@ -716,10 +726,11 @@ func cmdReindex() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, _ = db.Exec(`DELETE FROM fts_working WHERE fts_working MATCH '*'`)
-			_, _ = db.Exec(`DELETE FROM fts_episodic WHERE fts_episodic MATCH '*'`)
+			// 'rebuild' re-derives each external-content index from its table;
+			// the DELETE … MATCH '*' form is invalid on external-content FTS5.
 			_, _ = db.Exec(`INSERT INTO fts_working(fts_working) VALUES('rebuild')`)
 			_, _ = db.Exec(`INSERT INTO fts_episodic(fts_episodic) VALUES('rebuild')`)
+			_, _ = db.Exec(`INSERT INTO fts_preferences(fts_preferences) VALUES('rebuild')`)
 			fmt.Println("reindex: FTS rebuilt from DB")
 			return nil
 		},
@@ -1338,11 +1349,11 @@ func cmdPrefer() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, a, err := judge.Apply(cmd.Context(), db, cfg, judge.Input{Statement: stmt, Signal: learn.SignalExplicitPrefer}, "")
+			p, a, err := judge.Apply(cmd.Context(), db, cfg, judge.Input{Statement: stmt, Signal: learn.SignalExplicitPrefer}, "")
 			if err != nil {
 				return err
 			}
-			fmt.Printf("prefer recorded (%s, %s, c=%.2f, %s)\n", a.Category, a.Relation, a.Confidence, a.By)
+			fmt.Printf("prefer recorded (%s)\n", judge.Verdict(p, a))
 			return nil
 		},
 	}
@@ -1371,11 +1382,11 @@ func cmdCorrect() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, err := judge.Correct(cmd.Context(), db, cfg, c)
+			p, a, err := judge.Correct(cmd.Context(), db, cfg, c)
 			if err != nil {
 				return err
 			}
-			fmt.Println("correct recorded")
+			fmt.Printf("correct recorded (%s)\n", judge.Verdict(p, a))
 			return nil
 		},
 	}

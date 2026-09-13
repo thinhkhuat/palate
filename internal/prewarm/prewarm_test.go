@@ -110,3 +110,28 @@ func lineContaining(content, substr string) string {
 	}
 	return ""
 }
+
+// TestPrewarmHidesConflictLosers: a contradicted row (the conflict's
+// conflicting_id) must not be injected next to the row it contradicts.
+func TestPrewarmHidesConflictLosers(t *testing.T) {
+	storage.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(storage.Close)
+	_, _ = db.Exec(`INSERT INTO preferences(id, category, statement, confidence) VALUES('w','Testing','Prefers table-driven tests.',0.9)`)
+	_, _ = db.Exec(`INSERT INTO preferences(id, category, statement, confidence) VALUES('l','Testing','Prefers one assertion per test, never table-driven.',0.4)`)
+	_, _ = db.Exec(`INSERT INTO conflicts(id, preference_id, conflicting_id, reason) VALUES('c','w','l','contradiction')`)
+	b, err := SessionPrewarm(db, config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.Content, "table-driven tests.") || strings.Contains(b.Content, "never table-driven") {
+		t.Fatalf("session prewarm must hide the conflict loser:\n%s", b.Content)
+	}
+	g, fired, _ := GoalPrewarm(db, config.Default(), "write table-driven tests for the parser")
+	if fired && strings.Contains(g.Content, "never table-driven") {
+		t.Fatalf("goal prewarm must hide the conflict loser:\n%s", g.Content)
+	}
+}

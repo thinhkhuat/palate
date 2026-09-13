@@ -164,6 +164,16 @@ func TestApplyJudgedRelations(t *testing.T) {
 	if conflicts != 1 {
 		t.Fatalf("contradicts must open a conflict: %d", conflicts)
 	}
+	var rows int
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&rows)
+	if rows != 2 {
+		t.Fatalf("contradicts must store the new side exactly once (base + new = 2 rows), got %d", rows)
+	}
+	var linked string
+	_ = db.QueryRow(`SELECT conflicting_id FROM conflicts WHERE preference_id=?`, base.ID).Scan(&linked)
+	if linked != con.ID {
+		t.Fatalf("the conflict must link the judged row (%s), got %s", con.ID, linked)
+	}
 	unk, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers fast tests.", Category: "Testing", Confidence: 0.6, Relation: RelationSame, TargetID: "nope", By: "test"})
 	if unk.Statement != "Prefers fast tests." || unk.ID == base.ID {
 		t.Fatalf("unknown target must degrade to new: %+v", unk)

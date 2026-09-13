@@ -172,7 +172,7 @@ func TestMCPPreferJudged(t *testing.T) {
 		t.Fatalf("handlePrefer: %v %+v", err, res)
 	}
 	text := res.Content[0].(*mcp.TextContent).Text
-	if !strings.Contains(text, "prefer recorded: Prefers table-driven tests. (Testing, new, c=0.80)") {
+	if !strings.Contains(text, "prefer recorded: Prefers table-driven tests. (Testing, new, c=0.80, llm)") {
 		t.Fatalf("unexpected reply: %s", text)
 	}
 	var stmt string

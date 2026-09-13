@@ -84,14 +84,21 @@ func Apply(ctx context.Context, conn *sql.DB, cfg config.Config, in Input, evide
 // Correct judges a four-field correction: the fix (or, failing that, what
 // was tried) is the statement; the whole record lands on the events log as
 // one "correct" event exactly as learn.RecordCorrection does.
-func Correct(ctx context.Context, conn *sql.DB, cfg config.Config, c learn.Correction) (*learn.Preference, error) {
+func Correct(ctx context.Context, conn *sql.DB, cfg config.Config, c learn.Correction) (*learn.Preference, learn.Assessment, error) {
 	stmt := c.Statement()
-	p, _, err := Apply(ctx, conn, cfg, Input{Statement: stmt, Signal: learn.SignalExplicitCorrection}, "")
+	p, a, err := Apply(ctx, conn, cfg, Input{Statement: stmt, Signal: learn.SignalExplicitCorrection}, "")
 	if err != nil {
-		return nil, err
+		return nil, a, err
 	}
 	c.Fix = stmt
 	payload, _ := json.Marshal(c)
 	_ = storage.AppendEvent(conn, "correct", string(payload))
-	return p, nil
+	return p, a, nil
+}
+
+// Verdict formats what a write did, for the CLI/MCP reply: the relation, the
+// category, and the confidence the row now holds (after reinforcement), not
+// the judge's raw candidate score.
+func Verdict(p *learn.Preference, a learn.Assessment) string {
+	return fmt.Sprintf("%s, %s, c=%.2f, %s", a.Category, a.Relation, p.Confidence, a.By)
 }

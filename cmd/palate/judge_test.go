@@ -61,6 +61,7 @@ func TestGoldenFallbackExport(t *testing.T) {
 		{"prefer", "use table-driven tests"},
 		{"correct", "used panic", "swallows context", "return an error", "reviewing handlers"},
 		{"prefer", "prefer early returns over nested ifs"},
+		{"prefer", "never use table-driven tests"}, // contradiction → conflict, one extra row
 	} {
 		if _, err := runCLI(t, args...); err != nil {
 			t.Fatalf("%v: %v", args, err)
@@ -96,6 +97,7 @@ func TestGoldenFallbackExport(t *testing.T) {
 		{learn.SignalExplicitPrefer, "use table-driven tests"},
 		{learn.SignalExplicitCorrection, "return an error"},
 		{learn.SignalExplicitPrefer, "prefer early returns over nested ifs"},
+		{learn.SignalExplicitPrefer, "never use table-driven tests"},
 	} {
 		if _, err := learn.ApplySignal(db2, cfg2, learn.Signal{Type: sc.sig, Statement: sc.stmt, Category: learn.InferCategoryFromStatement(sc.stmt)}, nil); err != nil {
 			t.Fatal(err)
@@ -110,7 +112,15 @@ func TestGoldenFallbackExport(t *testing.T) {
 		want = append(want, strings.Join([]string{c, s, conf, src, tier}, "|")+"|"+string(rune('0'+n)))
 	}
 	rows2.Close()
-	if len(want) != 3 || strings.Join(got, "\n") != strings.Join(want, "\n") {
+	// insertConflict (old path) mislabelled the contradicting row's source as
+	// stated_preference; the judge records the real signal. Normalize that one
+	// documented difference before the byte comparison.
+	for i := range want {
+		if strings.HasPrefix(want[i], "Testing|never use table-driven tests|") {
+			want[i] = strings.Replace(want[i], "|stated_preference|", "|explicit_prefer|", 1)
+		}
+	}
+	if len(want) != 4 || strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("golden fallback drifted:\n got:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
