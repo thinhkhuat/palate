@@ -18,18 +18,35 @@
 #      loser that times out, or a build that fails, falls through to step 5.
 #   5. one stderr line, exit 0.
 #
-# plugin_root resolves to $CLAUDE_PLUGIN_ROOT when set, else it self-locates
-# from $0 — every Codex MCP invocation, since .codex-plugin/mcp.json's
-# relative command + cwd:"." means Codex never sets that env var for the MCP
-# child. dirname(1) is deliberately avoided below (an external command,
-# unusable if PATH is empty) in favor of pure shell parameter expansion.
+# plugin_root is the directory this script physically lives under, resolved
+# from $0 — harness-agnostic, the same way skill-concierge's launcher resolves
+# from BASH_SOURCE. Harness plugin-root env vars (CLAUDE_PLUGIN_ROOT,
+# ZCODE_PLUGIN_ROOT) are consulted only as a fallback when $0 gives no usable
+# tree, and only when the candidate is an absolute path that really contains
+# bin/palate. Never trust them first: a host may export a foreign or literal,
+# unexpanded value (observed: settings.json env `CLAUDE_PLUGIN_ROOT="$HOME/.claude"`
+# reaching every Claude-spawned process) — trusting it sent step 4 to
+# `mkdir -p '$HOME/.claude/.cache'` in the caller's cwd and reported "go is not
+# installed" with go present. dirname(1) is deliberately avoided below (an
+# external command, unusable if PATH is empty) in favor of pure shell
+# parameter expansion.
 set -eu
 
-plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
-if [ -z "$plugin_root" ]; then
-  script_dir="${0%/*}"
-  [ "$script_dir" = "$0" ] && script_dir="."
-  plugin_root="$(cd "$script_dir/.." && pwd)"
+# has_launcher DIR — true iff DIR is an absolute path holding this launcher.
+has_launcher() {
+  case "$1" in /*) [ -x "$1/bin/palate" ] ;; *) return 1 ;; esac
+}
+
+script_dir="${0%/*}"
+[ "$script_dir" = "$0" ] && script_dir="."
+plugin_root="$(cd "$script_dir/.." 2>/dev/null && pwd || true)"
+if ! has_launcher "$plugin_root"; then
+  for candidate in "${CLAUDE_PLUGIN_ROOT:-}" "${ZCODE_PLUGIN_ROOT:-}"; do
+    if has_launcher "$candidate"; then
+      plugin_root="$candidate"
+      break
+    fi
+  done
 fi
 
 # 1. explicit override
@@ -53,8 +70,15 @@ if command -v palate >/dev/null 2>&1; then
 fi
 
 # 4. build-race-guarded local build from the plugin root (it already is the
-# source tree, so a local build beats fetching a release tarball)
-if command -v go >/dev/null 2>&1; then
+# source tree, so a local build beats fetching a release tarball). go.mod is
+# the proof this really is the source tree — never mkdir/build under a root
+# that only looked plausible.
+if ! command -v go >/dev/null 2>&1; then
+  reason="go is not installed"
+elif [ ! -f "$plugin_root/go.mod" ]; then
+  reason="no source tree at $plugin_root (go.mod missing)"
+else
+  reason="local go build from $plugin_root failed"
   cache_dir="$plugin_root/.cache"
   built="$cache_dir/palate"
   lock="$cache_dir/build.lock"
@@ -86,5 +110,5 @@ if command -v go >/dev/null 2>&1; then
 fi
 
 # 5. nothing found — fail open, never block the hook/MCP caller
-echo "palate: no binary found and go is not installed — see INSTALL.md" >&2
+echo "palate: no binary found and $reason — see INSTALL.md" >&2
 exit 0

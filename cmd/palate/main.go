@@ -875,8 +875,10 @@ const pluginDoubleFireWarning = `warning: palate hooks may be wired twice (plugi
 
 // pluginHooksInstalled reports whether a palate plugin cache directory
 // exists for Claude Code or Codex. It never keys off CLAUDE_PLUGIN_ROOT —
-// that env var is only ever set inside a hook's own process, never when a
-// human runs `hook help` interactively, so it would never fire there.
+// that env var is unreliable as a signal: harnesses set it inside a hook's
+// own process (never for a human running `hook help` interactively), and a
+// host's settings env may export a foreign or literal, unexpanded value to
+// every process (observed: `CLAUDE_PLUGIN_ROOT="$HOME/.claude"`).
 // Detection is filesystem-based instead: a glob for the plugin cache layout
 // both harnesses use.
 func pluginHooksInstalled() bool {
