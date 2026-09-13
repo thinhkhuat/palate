@@ -13,7 +13,7 @@ dist/
 .commandcode/
 .handoff/
 .memsearch/
-TASTE.md
+/TASTE.md
 command-code-session-*.md
 package-lock.json
 __pycache__/
