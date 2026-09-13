@@ -8,8 +8,8 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 |------|---------|-------------|
 | Homebrew | `brew install thinhkhuat/palate/palate` | Once the tap `thinhkhuat/homebrew-palate` is published (the release workflow pushes it only when `HOMEBREW_TAP_GITHUB_TOKEN` is set) |
 | Head (pre-release) | `brew install --HEAD thinhkhuat/palate/palate` | Same tap prerequisite; builds `main` from source |
-| Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` | Any Unix with `curl`; installs the latest GitHub Release binary (`sh install.sh v0.3.0` pins a tag, `PALATE_INSTALL_DIR` overrides `/usr/local/bin`) |
-| From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
+| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.3.0` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
+| From source | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ and git access to the private repo |
 | Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate doctor` | CI / agent bootstrap — single shot, no TTY |
 
 Verify:
