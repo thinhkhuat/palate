@@ -37,8 +37,24 @@ type Config struct {
 	TaxonomyThreshold int          `yaml:"taxonomy_threshold"`
 	MCP               MCP          `yaml:"mcp"`
 	LLM               LLM
-	Distill           Distill `yaml:"distill"`
-	Render            Render  `yaml:"render"`
+	Distill           Distill     `yaml:"distill"`
+	Render            Render      `yaml:"render"`
+	Judge             Judge       `yaml:"judge"`
+	Consolidate       Consolidate `yaml:"consolidate"`
+}
+
+// Judge: when a gateway is configured the model judges every explicit write
+// (statement, category, confidence, relation to existing rows). Off falls
+// back to the heuristics. PALATE_JUDGE=0 overrides.
+type Judge struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// Consolidate: the whole-profile review pass. EveryEvents is the watermark
+// distance that lets SessionStart auto-fire it (0 disables auto-fire).
+// PALATE_CONSOLIDATE_EVERY overrides.
+type Consolidate struct {
+	EveryEvents int `yaml:"every_events"`
 }
 
 // Render controls the auto-maintained TASTE.md. Auto is on unless the user
@@ -144,8 +160,10 @@ func Default() Config {
 			TokenEnv:  "PALATE_MCP_TOKEN",
 			Allowlist: []string{"127.0.0.1", "localhost", "::1", "ip6-localhost"},
 		},
-		Distill: Distill{Mode: "auto"},
-		Render:  Render{Auto: true},
+		Distill:     Distill{Mode: "auto"},
+		Render:      Render{Auto: true},
+		Judge:       Judge{Enabled: true},
+		Consolidate: Consolidate{EveryEvents: 25},
 	}
 }
 
@@ -328,7 +346,20 @@ func applyEnv(c *Config) {
 			c.Render.Auto = b
 		}
 	}
+	if v := os.Getenv("PALATE_JUDGE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Judge.Enabled = b
+		}
+	}
+	if v := os.Getenv("PALATE_CONSOLIDATE_EVERY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.Consolidate.EveryEvents = n
+		}
+	}
 }
+
+// JudgeIsLLM reports whether explicit writes are judged by the gateway.
+func (c Config) JudgeIsLLM() bool { return c.LLMConfigured() && c.Judge.Enabled }
 
 // LLMConfigured reports whether enough of PALATE_LLM_* is set to attempt a
 // gateway call. The API key is optional (some gateways need none).

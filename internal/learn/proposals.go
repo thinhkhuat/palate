@@ -17,13 +17,20 @@ type Proposal struct {
 }
 
 func CreateProposal(conn *sql.DB, content, category string) (string, error) {
+	return CreateProposalFrom(conn, content, category, "llm")
+}
+
+// CreateProposalFrom records a proposal with an explicit source; the
+// consolidator uses source "consolidate" and stores its action JSON as the
+// content, which `palate promote` recognizes and applies as an action.
+func CreateProposalFrom(conn *sql.DB, content, category, source string) (string, error) {
 	id := newID()
 	now := time.Now().UTC().Format(time.RFC3339)
-	if category == "" {
+	if category == "" && source != "consolidate" {
 		category = InferCategoryFromStatement(content)
 	}
 	_, err := conn.Exec(`INSERT INTO proposals(id, content, category, source, proposed_weight, status, created_at) VALUES(?,?,?,?,?,?,?)`,
-		id, content, category, "llm", 0.4, "pending", now)
+		id, content, category, source, 0.4, "pending", now)
 	if err != nil {
 		return "", err
 	}

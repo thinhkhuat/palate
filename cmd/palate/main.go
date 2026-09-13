@@ -17,7 +17,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/thinhkhuat/palate/internal/adapters"
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/consolidate"
 	"github.com/thinhkhuat/palate/internal/distill"
+	"github.com/thinhkhuat/palate/internal/judge"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/mcp"
 	"github.com/thinhkhuat/palate/internal/prewarm"
@@ -39,6 +41,9 @@ var version = "dev"
 // can swap in a spy instead of starting a real child process; the
 // production path leaves it pointed at the real function.
 var spawnLearnSession = distill.SpawnLearnSession
+
+// spawnConsolidate is the same seam for the auto-fired consolidation pass.
+var spawnConsolidate = distill.SpawnConsolidate
 
 func loadConfig() config.Config {
 	if cfgFile == "" {
@@ -100,6 +105,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cmdPull())
 	root.AddCommand(cmdTaste())
 	root.AddCommand(cmdMigrate())
+	root.AddCommand(cmdConsolidate())
 	root.AddCommand(cmdVerify())
 	root.AddCommand(cmdHook())
 	root.AddCommand(cmdPrefer())
@@ -156,6 +162,7 @@ func cmdDoctor() *cobra.Command {
 			}
 			fmt.Printf("db: %s\n", cfg.DBPath)
 			fmt.Printf("taste: %s (auto-render %s)\n", cfg.TastePath(), map[bool]string{true: "on", false: "off"}[cfg.Render.Auto])
+			fmt.Printf("judge: %s\n", judge.Mode(cfg))
 			if bak := storage.NewestBackup(cfg.BackupDir()); bak != "" {
 				fmt.Printf("backup: newest %s\n", bak)
 			} else {
@@ -173,6 +180,8 @@ func cmdDoctor() *cobra.Command {
 				return fmt.Errorf("doctor: database unreadable at %s", cfg.DBPath)
 			}
 			defer storage.Close()
+			since, every, due := consolidate.Due(db, cfg)
+			fmt.Printf("consolidate: %d events since last pass / every %d (auto-fire %s)\n", since, every, map[bool]string{true: "due", false: "not due"}[due])
 			var v string
 			if err := db.QueryRow(`SELECT sqlite_version()`).Scan(&v); err == nil {
 				fmt.Printf("sqlite: %s\n", v)
@@ -333,6 +342,15 @@ func cmdSleep() *cobra.Command {
 			db := openDB(cfg)
 			defer storage.Close()
 			n, err := storage.Sleep(db)
+			if err == nil && cfg.LLMConfigured() {
+				if gw, ok := distill.NewGatewayFromEnv(cfg); ok {
+					if rep, cerr := consolidate.Run(cmd.Context(), db, cfg, gw); cerr != nil {
+						fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
+					} else {
+						fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
+					}
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -382,6 +400,18 @@ func cmdStats() *cobra.Command {
 			_ = db.QueryRow(`SELECT count(*) FROM preferences WHERE valid_until IS NULL`).Scan(&prefs)
 			_ = db.QueryRow(`SELECT count(*) FROM events`).Scan(&events)
 			fmt.Printf("working: %d episodic: %d preferences: %d events: %d\n", wm, em, prefs, events)
+			// capture counters: one line per signal, so judge_llm / judge_fallback
+			// and the consolidation counters are visible without sqlite
+			if rows, err := db.Query(`SELECT signal_type, hits, drops FROM capture_counters ORDER BY signal_type`); err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var name string
+					var hits, drops int
+					if rows.Scan(&name, &hits, &drops) == nil {
+						fmt.Printf("counter: %s hits=%d drops=%d\n", name, hits, drops)
+					}
+				}
+			}
 			return nil
 		},
 	}
@@ -476,7 +506,7 @@ func cmdReimport() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			n, err := render.Reimport(db, path)
+			n, err := render.Reimport(db, cfg, path)
 			if err != nil {
 				return err
 			}
@@ -618,6 +648,37 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.WriteFile(dst, b, mode)
 }
 
+// cmdConsolidate runs one whole-profile review pass through the gateway.
+func cmdConsolidate() *cobra.Command {
+	return &cobra.Command{
+		Use:          "consolidate",
+		Short:        "Review the whole profile with the LLM gateway: merge, rewrite, rescore, retire (review mode → proposals)",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			gw, ok := distill.NewGatewayFromEnv(cfg)
+			if !ok {
+				return fmt.Errorf("consolidate: no LLM gateway configured (PALATE_LLM_ENDPOINT/PALATE_LLM_MODEL)")
+			}
+			release, locked := distill.AcquireLearnLock(learnLockPath(cfg))
+			if !locked {
+				fmt.Fprintln(os.Stderr, "consolidate: another learn/consolidate pass holds the lock; skipping")
+				return nil
+			}
+			defer release()
+			db := openDB(cfg)
+			defer storage.Close()
+			rep, err := consolidate.Run(cmd.Context(), db, cfg, gw)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("consolidated %d rows: %d actions (%d applied, %d proposed, %d skipped by guards) mode=%s watermark=event #%d\n",
+				rep.Rows, rep.Actions, rep.Applied, rep.Proposed, rep.Skipped, rep.Mode, rep.Watermark)
+			return nil
+		},
+	}
+}
+
 func cmdPull() *cobra.Command {
 	return &cobra.Command{
 		Use:   "pull [path]",
@@ -636,7 +697,7 @@ func cmdPull() *cobra.Command {
 			} else if bak != "" {
 				fmt.Fprintln(os.Stderr, "backup:", bak)
 			}
-			n, err := render.Reimport(db, path)
+			n, err := render.Reimport(db, cfg, path)
 			if err != nil {
 				fmt.Println("pull: nothing to reimport —", err)
 				return nil
@@ -861,6 +922,13 @@ func cmdHook() *cobra.Command {
 				// Detached, fire-and-forget: this must never make the hook
 				// wait on the distiller's LLM call.
 				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
+			}
+			if cfg.LLMConfigured() {
+				// Same rule for the whole-profile review: only past the
+				// watermark, never in-line.
+				if _, _, due := consolidate.Due(db, cfg); due {
+					_ = spawnConsolidate(hookBinaryPath())
+				}
 			}
 			block, err := prewarm.SessionPrewarm(db, cfg)
 			if err != nil || block.Content == "" {
@@ -1270,11 +1338,11 @@ func cmdPrefer() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil)
+			_, a, err := judge.Apply(cmd.Context(), db, cfg, judge.Input{Statement: stmt, Signal: learn.SignalExplicitPrefer}, "")
 			if err != nil {
 				return err
 			}
-			fmt.Println("prefer recorded")
+			fmt.Printf("prefer recorded (%s, %s, c=%.2f, %s)\n", a.Category, a.Relation, a.Confidence, a.By)
 			return nil
 		},
 	}
@@ -1303,7 +1371,7 @@ func cmdCorrect() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			_, err := learn.RecordCorrection(db, cfg, c)
+			_, err := judge.Correct(cmd.Context(), db, cfg, c)
 			if err != nil {
 				return err
 			}
@@ -1345,8 +1413,14 @@ func cmdPromote() *cobra.Command {
 			if as == "" {
 				as = "stated_preference"
 			}
+			var source string
+			_ = db.QueryRow(`SELECT source FROM proposals WHERE id=?`, args[0]).Scan(&source)
 			_, err := learn.PromoteProposal(db, args[0], as, cfg, func(sig learn.Signal) error {
-				_, err := learn.ApplySignal(db, cfg, sig, nil)
+				if source == "consolidate" {
+					// the proposal's content is the stored action, not a statement
+					return consolidate.ApplyProposal(db, cfg, sig.Statement)
+				}
+				_, _, err := judge.Apply(cmd.Context(), db, cfg, judge.Input{Statement: sig.Statement, Signal: sig.Type, Category: sig.Category}, "")
 				return err
 			})
 			if err != nil {

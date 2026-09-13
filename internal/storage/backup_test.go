@@ -38,3 +38,35 @@ func TestBackupBeforeCopiesTheDB(t *testing.T) {
 		t.Fatalf("missing DB must be a no-op: %q %v", missing, err)
 	}
 }
+
+// TestFTSStaysInSyncOnStatementUpdate: refine/rewrite/merge update
+// preferences.statement; the external-content FTS index must follow instead
+// of raising SQLITE_CORRUPT_VTAB, and recall must find the new wording.
+func TestFTSStaysInSyncOnStatementUpdate(t *testing.T) {
+	Close()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(Close)
+	if _, err := db.Exec(`INSERT INTO preferences(id, category, statement) VALUES('p1','Testing','Prefers table-driven tests.')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE preferences SET statement='Prefers golden-file tests.' WHERE id='p1'`); err != nil {
+		t.Fatalf("statement update must not corrupt the FTS index: %v", err)
+	}
+	var n int
+	_ = db.QueryRow(`SELECT count(*) FROM fts_preferences WHERE fts_preferences MATCH 'golden'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("FTS must index the new wording, got %d", n)
+	}
+	_ = db.QueryRow(`SELECT count(*) FROM fts_preferences WHERE fts_preferences MATCH 'table'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("FTS must drop the old wording, got %d", n)
+	}
+	if _, err := db.Exec(`DELETE FROM preferences WHERE id='p1'`); err != nil {
+		t.Fatalf("delete must not corrupt the FTS index: %v", err)
+	}
+	var check string
+	_ = db.QueryRow(`INSERT INTO fts_preferences(fts_preferences) VALUES('integrity-check')`).Scan(&check)
+}

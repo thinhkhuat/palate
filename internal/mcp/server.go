@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/judge"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/render"
 	"github.com/thinhkhuat/palate/internal/safety"
@@ -19,7 +20,7 @@ import (
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.2.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.3.0"}, nil)
 	registerTools(s)
 	return s
 }
@@ -167,7 +168,7 @@ func handleCorrect(ctx context.Context, req *mcp.CallToolRequest, in CorrectInpu
 	if fail != nil {
 		return fail, nil, nil
 	}
-	if _, err := learn.RecordCorrection(db, cfg, c); err != nil {
+	if _, err := judge.Correct(context.Background(), db, cfg, c); err != nil {
 		return errResult(err.Error()), nil, nil
 	}
 	storage.BumpHit(db, "explicit_correction")
@@ -183,11 +184,12 @@ func recordStatement(stmt string, sig learn.SignalType, counter, label string) (
 	if fail != nil {
 		return fail, nil, nil
 	}
-	if _, err := learn.ApplySignal(db, cfg, learn.Signal{Type: sig, Statement: stmt, Category: learn.InferCategoryFromStatement(stmt)}, nil); err != nil {
+	_, a, err := judge.Apply(context.Background(), db, cfg, judge.Input{Statement: stmt, Signal: sig}, "")
+	if err != nil {
 		return errResult(err.Error()), nil, nil
 	}
 	storage.BumpHit(db, counter)
-	return textResult(label + " recorded: " + stmt), nil, nil
+	return textResult(fmt.Sprintf("%s recorded: %s (%s, %s, c=%.2f)", label, a.Statement, a.Category, a.Relation, a.Confidence)), nil, nil
 }
 
 func handlePrefer(ctx context.Context, req *mcp.CallToolRequest, in StatementInput) (*mcp.CallToolResult, interface{}, error) {

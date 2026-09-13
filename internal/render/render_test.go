@@ -42,16 +42,12 @@ func TestLint(t *testing.T) {
 }
 
 func TestReimportQuarantine(t *testing.T) {
-	storage.Close()
-	db, err := storage.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { storage.Close() })
+	db := openTestDB(t)
+	var err error
 	dir := t.TempDir()
 	path := filepath.Join(dir, "TASTE.md")
 	_ = os.WriteFile(path, []byte("# Taste\n\n## General\n\n- use early returns. Confidence: 0.90\n"), 0644)
-	n, err := Reimport(db, path)
+	n, err := Reimport(db, config.Default(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +60,7 @@ func TestReimportQuarantine(t *testing.T) {
 	if tier != "IMPORTED" || conf != 0.4 {
 		t.Fatalf("quarantine: tier=%s conf=%v", tier, conf)
 	}
-	n2, _ := Reimport(db, path)
+	n2, _ := Reimport(db, config.Default(), path)
 	if n2 != 0 {
 		t.Fatalf("reimport should be idempotent, got %d", n2)
 	}
@@ -118,6 +114,9 @@ func TestSyncUnchangedNoRewrite(t *testing.T) {
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
+	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY"} {
+		t.Setenv(k, "")
+	}
 	storage.Close()
 	db, err := storage.Open(":memory:")
 	if err != nil {
@@ -147,7 +146,7 @@ func TestReimportMarksDirty(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# Taste\n\n## Testing\n\n- use table-driven tests. Confidence: 0.40\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := Reimport(db, path)
+	n, err := Reimport(db, config.Default(), path)
 	if err != nil || n != 1 {
 		t.Fatalf("Reimport: n=%d err=%v", n, err)
 	}
@@ -156,8 +155,8 @@ func TestReimportMarksDirty(t *testing.T) {
 		t.Fatalf("Reimport must mark the store dirty (flushes=%d)", flushes)
 	}
 	var events int
-	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='import'`).Scan(&events)
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='create' AND payload LIKE '%"signal":"imported"%'`).Scan(&events)
 	if events != 1 {
-		t.Fatalf("expected one import event, got %d", events)
+		t.Fatalf("expected one create event for the imported row, got %d", events)
 	}
 }

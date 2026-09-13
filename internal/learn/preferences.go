@@ -461,3 +461,153 @@ func distilledSeed(w, cFloor float64) float64 {
 	}
 	return w
 }
+
+// Relation is a judge's verdict on how a candidate statement relates to the
+// existing rows of its category.
+type Relation string
+
+const (
+	RelationNew         Relation = "new"
+	RelationSame        Relation = "same"
+	RelationRefines     Relation = "refines"
+	RelationContradicts Relation = "contradicts"
+)
+
+// Assessment is what a judge (LLM or heuristic) decides for one write:
+// the statement to store, its category and confidence, and its relation to
+// an existing row (TargetID set for same/refines/contradicts). By carries
+// "llm" or "heuristic" for provenance.
+type Assessment struct {
+	Statement  string
+	Category   string
+	Confidence float64
+	Relation   Relation
+	TargetID   string
+	Reason     string
+	By         string
+}
+
+// ActiveInCategory lists the live rows a judge compares a candidate against.
+func ActiveInCategory(conn *sql.DB, category string) ([]Preference, error) {
+	rows, err := conn.Query(`SELECT id, category, statement, confidence, importance, source, provenance, valid_from, valid_until, created_at, last_reinforced_at, reinforcement_count, owner, trust_tier, veracity
+		FROM preferences WHERE category=? AND valid_until IS NULL ORDER BY confidence DESC, id ASC`, category)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Preference
+	for rows.Next() {
+		var p Preference
+		var validUntil sql.NullString
+		if err := rows.Scan(&p.ID, &p.Category, &p.Statement, &p.Confidence, &p.Importance, &p.Source, &p.Provenance, &p.ValidFrom, &validUntil, &p.CreatedAt, &p.LastReinforcedAt, &p.ReinforcementCount, &p.Owner, &p.TrustTier, &p.Veracity); err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// Exported lookups so the heuristic judge can reproduce ApplySignal's
+// matching exactly.
+func FindByStatement(conn *sql.DB, category, statement string) (*Preference, error) {
+	return findByStatement(conn, category, statement)
+}
+func FindContradiction(conn *sql.DB, category, statement string) (*Preference, error) {
+	return findContradiction(conn, category, statement)
+}
+func FindNearDuplicate(conn *sql.DB, category, statement string) (*Preference, error) {
+	return findNearDuplicate(conn, category, statement)
+}
+
+// ClampConfidence keeps a judged confidence inside [cFloor, 0.95]: a single
+// verdict never looks certain; reinforcement governs growth from there.
+func ClampConfidence(c, cFloor float64) float64 {
+	if c < cFloor {
+		return cFloor
+	}
+	if c > 0.95 {
+		return 0.95
+	}
+	return c
+}
+
+// ApplyJudged stores a write according to a judge's Assessment. It reuses
+// ApplySignal's events, tiers and columns so render, recall, decay and
+// verify keep working unchanged:
+//
+//	new         → insert at the judged confidence
+//	same        → reinforce the target
+//	refines     → reinforce the target and replace its statement (event
+//	              "refine" keeps the old text)
+//	contradicts → weaken the target, open a conflict, insert the new row
+func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Preference, error) {
+	w := cfg.WeightFor(string(sig.Type))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if a.Category == "" {
+		a.Category = InferCategoryFromStatement(a.Statement)
+	}
+	var target *Preference
+	if a.TargetID != "" && a.Relation != RelationNew {
+		target = preferenceByID(conn, a.TargetID)
+	}
+	if target == nil {
+		a.Relation = RelationNew
+	}
+	switch a.Relation {
+	case RelationSame, RelationRefines:
+		dh := deltaHours(target.LastReinforcedAt, nil)
+		c := Reinforce(Decay(target.Confidence, cfg.CFloor, cfg.HalfLifeHours, dh), w, cfg.LearningRate, cfg.CFloor)
+		stmt := target.Statement
+		if a.Relation == RelationRefines && a.Statement != "" && a.Statement != target.Statement {
+			stmt = a.Statement
+			_ = storage.AppendEvent(conn, "refine", withEvidence(fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"by":%q}`, target.ID, target.Statement, stmt, a.By), sig.Evidence))
+		}
+		if _, err := conn.Exec(`UPDATE preferences SET statement=?, confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1, provenance=? WHERE id=?`,
+			stmt, c, now, appendProvenance(target.Provenance, string(sig.Type)+"/judged:"+a.By), target.ID); err != nil {
+			return nil, err
+		}
+		_ = storage.AppendEvent(conn, "reinforce", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, target.ID, c, sig.Type, a.By), sig.Evidence))
+		target.Statement, target.Confidence = stmt, c
+		return target, nil
+	case RelationContradicts:
+		dh := deltaHours(target.LastReinforcedAt, nil)
+		c := Weaken(Decay(target.Confidence, cfg.CFloor, cfg.HalfLifeHours, dh), w, cfg.LearningRate, cfg.CFloor)
+		if c <= cfg.CFloor+1e-9 {
+			_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1, valid_until=? WHERE id=?`, c, now, now, target.ID)
+			_ = storage.AppendEvent(conn, "weaken_close", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"by":%q}`, target.ID, c, a.By), sig.Evidence))
+		} else {
+			_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1 WHERE id=?`, c, now, target.ID)
+			_ = storage.AppendEvent(conn, "weaken", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"by":%q}`, target.ID, c, a.By), sig.Evidence))
+		}
+		_ = insertConflict(conn, target.ID, a.Statement, w, cfg, now)
+	}
+	// new (or contradicts: the new side is stored as its own row)
+	conf := ClampConfidence(a.Confidence, cfg.CFloor)
+	id := newID()
+	prov, _ := json.Marshal([]string{string(sig.Type), "judged:" + a.By})
+	trustTier := "STATED"
+	if sig.Type == SignalImported {
+		trustTier = "IMPORTED"
+	} else if sig.Type == SignalLLMDistilled {
+		trustTier = "DISTILLED"
+	}
+	if _, err := conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, valid_from, created_at, last_reinforced_at, reinforcement_count, trust_tier, veracity)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, a.Category, a.Statement, conf, 0.5, string(sig.Type), string(prov), now, now, now, 0, trustTier, string(sig.Type)); err != nil {
+		return nil, err
+	}
+	_ = storage.AppendEvent(conn, "create", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, id, conf, sig.Type, a.By), sig.Evidence))
+	return &Preference{ID: id, Category: a.Category, Statement: a.Statement, Confidence: conf, TrustTier: trustTier}, nil
+}
+
+func preferenceByID(conn *sql.DB, id string) *Preference {
+	var p Preference
+	var validUntil sql.NullString
+	err := conn.QueryRow(`SELECT id, category, statement, confidence, importance, source, provenance, valid_from, valid_until, created_at, last_reinforced_at, reinforcement_count, owner, trust_tier, veracity
+		FROM preferences WHERE id=? AND valid_until IS NULL LIMIT 1`, id).Scan(
+		&p.ID, &p.Category, &p.Statement, &p.Confidence, &p.Importance, &p.Source, &p.Provenance, &p.ValidFrom, &validUntil, &p.CreatedAt, &p.LastReinforcedAt, &p.ReinforcementCount, &p.Owner, &p.TrustTier, &p.Veracity)
+	if err != nil {
+		return nil
+	}
+	return &p
+}

@@ -14,7 +14,13 @@ import (
 // learnSessionCmd builds the detached `learn session` command. Split out so a
 // test can assert what the child inherits without starting a process.
 func learnSessionCmd(bin, transcriptPath string) *exec.Cmd {
-	cmd := exec.Command(bin, "learn", "session", transcriptPath)
+	return detachedCmd(bin, "learn", "session", transcriptPath)
+}
+
+// detachedCmd builds any fire-and-forget palate subprocess (learn session,
+// consolidate) with the same detachment, cwd and environment rules.
+func detachedCmd(bin string, args ...string) *exec.Cmd {
+	cmd := exec.Command(bin, args...)
 	// nil Stdin/Stdout/Stderr: Cmd discards them when not connected to a
 	// pipe, equivalent to redirecting to /dev/null without needing one.
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
@@ -34,4 +40,10 @@ func learnSessionCmd(bin, transcriptPath string) *exec.Cmd {
 
 func SpawnLearnSession(bin, transcriptPath string) error {
 	return learnSessionCmd(bin, transcriptPath).Start()
+}
+
+// SpawnConsolidate starts a detached `palate consolidate` (auto-fired by
+// SessionStart past the watermark).
+func SpawnConsolidate(bin string) error {
+	return detachedCmd(bin, "consolidate").Start()
 }

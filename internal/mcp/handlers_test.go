@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
@@ -23,6 +25,9 @@ func memStore(t *testing.T) *sql.DB {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PALATE_HOME", "")
 	t.Setenv("PALATE_RENDER_AUTO", "")
+	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY", "PALATE_JUDGE"} {
+		t.Setenv(k, "")
+	}
 	storage.SetOnDirtyFlush(nil)
 	storage.Close()
 	db, err := storage.Open(":memory:")
@@ -147,5 +152,32 @@ func TestAutoTasteAfterMCPPrefer(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "use table-driven tests") || !strings.Contains(string(b), "(explicit_prefer, STATED)") {
 		t.Fatalf("unexpected TASTE.md content:\n%s", b)
+	}
+}
+
+// TestMCPPreferJudged: the tool reply carries the judged statement, category,
+// relation and confidence; the row stores the model's wording.
+func TestMCPPreferJudged(t *testing.T) {
+	db := memStore(t)
+	reply, _ := json.Marshal(map[string]interface{}{"statement": "Prefers table-driven tests.", "category": "Testing", "confidence": 0.8, "relation": "new", "target_id": "", "reason": "t"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"choices": []map[string]interface{}{{"message": map[string]string{"role": "assistant", "content": string(reply)}}}})
+	}))
+	defer srv.Close()
+	t.Setenv("PALATE_LLM_ENDPOINT", srv.URL+"/v1/chat/completions")
+	t.Setenv("PALATE_LLM_MODEL", "fake")
+	res, _, err := handlePrefer(context.Background(), nil, StatementInput{Statement: "i like table driven tests"})
+	if err != nil || res.IsError {
+		t.Fatalf("handlePrefer: %v %+v", err, res)
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "prefer recorded: Prefers table-driven tests. (Testing, new, c=0.80)") {
+		t.Fatalf("unexpected reply: %s", text)
+	}
+	var stmt string
+	_ = db.QueryRow(`SELECT statement FROM preferences WHERE valid_until IS NULL`).Scan(&stmt)
+	if stmt != "Prefers table-driven tests." {
+		t.Fatalf("row must store the judged wording, got %q", stmt)
 	}
 }

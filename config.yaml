@@ -41,3 +41,7 @@ distill:
   mode: auto   # auto | review
 render:
   auto: true   # keep <home>/TASTE.md current after every write (PALATE_RENDER_AUTO=0 to disable)
+judge:
+  enabled: true   # with a gateway configured, the model judges every explicit write (PALATE_JUDGE=0 falls back to heuristics)
+consolidate:
+  every_events: 25   # SessionStart auto-fires `palate consolidate` this many events after the last pass (0 = never; PALATE_CONSOLIDATE_EVERY)

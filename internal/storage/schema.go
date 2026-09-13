@@ -209,6 +209,13 @@ func initSchema(conn *sql.DB) error {
 			drops INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 		)`,
+		`CREATE TABLE IF NOT EXISTS consolidations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			last_event_id INTEGER NOT NULL DEFAULT 0,
+			actions INTEGER NOT NULL DEFAULT 0,
+			mode TEXT NOT NULL DEFAULT 'auto',
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		)`,
 		`CREATE TABLE IF NOT EXISTS learn_cursors (
 			source TEXT NOT NULL,
 			key TEXT NOT NULL,
@@ -226,16 +233,26 @@ func initSchema(conn *sql.DB) error {
 			return fmt.Errorf("ddl failed: %w\nsql: %s", err, s)
 		}
 	}
+	// External-content FTS5 tables (content='…') must be kept in sync with the
+	// documented 'delete' + insert pair; a plain UPDATE/DELETE on the FTS table
+	// raises SQLITE_CORRUPT_VTAB (267). The update/delete triggers are dropped
+	// and recreated so stores created by earlier versions pick up the fix.
 	triggers := []string{
 		`CREATE TRIGGER IF NOT EXISTS trg_wm_insert AFTER INSERT ON working_memory BEGIN INSERT INTO fts_working(rowid, content) VALUES (new.rowid, new.content); END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_wm_update AFTER UPDATE OF content ON working_memory BEGIN UPDATE fts_working SET content=new.content WHERE rowid=new.rowid; END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_wm_delete AFTER DELETE ON working_memory BEGIN DELETE FROM fts_working WHERE rowid=old.rowid; END`,
+		`DROP TRIGGER IF EXISTS trg_wm_update`,
+		`CREATE TRIGGER trg_wm_update AFTER UPDATE OF content ON working_memory BEGIN INSERT INTO fts_working(fts_working, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO fts_working(rowid, content) VALUES (new.rowid, new.content); END`,
+		`DROP TRIGGER IF EXISTS trg_wm_delete`,
+		`CREATE TRIGGER trg_wm_delete AFTER DELETE ON working_memory BEGIN INSERT INTO fts_working(fts_working, rowid, content) VALUES ('delete', old.rowid, old.content); END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_em_insert AFTER INSERT ON episodic_memory BEGIN INSERT INTO fts_episodic(rowid, content) VALUES (new.rowid, new.content); END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_em_update AFTER UPDATE OF content ON episodic_memory BEGIN UPDATE fts_episodic SET content=new.content WHERE rowid=new.rowid; END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_em_delete AFTER DELETE ON episodic_memory BEGIN DELETE FROM fts_episodic WHERE rowid=old.rowid; END`,
+		`DROP TRIGGER IF EXISTS trg_em_update`,
+		`CREATE TRIGGER trg_em_update AFTER UPDATE OF content ON episodic_memory BEGIN INSERT INTO fts_episodic(fts_episodic, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO fts_episodic(rowid, content) VALUES (new.rowid, new.content); END`,
+		`DROP TRIGGER IF EXISTS trg_em_delete`,
+		`CREATE TRIGGER trg_em_delete AFTER DELETE ON episodic_memory BEGIN INSERT INTO fts_episodic(fts_episodic, rowid, content) VALUES ('delete', old.rowid, old.content); END`,
 		`CREATE TRIGGER IF NOT EXISTS trg_pref_insert AFTER INSERT ON preferences BEGIN INSERT INTO fts_preferences(rowid, statement, category) VALUES (new.rowid, new.statement, new.category); END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_pref_update AFTER UPDATE OF statement ON preferences BEGIN UPDATE fts_preferences SET statement=new.statement, category=new.category WHERE rowid=new.rowid; END`,
-		`CREATE TRIGGER IF NOT EXISTS trg_pref_delete AFTER DELETE ON preferences BEGIN DELETE FROM fts_preferences WHERE rowid=old.rowid; END`,
+		`DROP TRIGGER IF EXISTS trg_pref_update`,
+		`CREATE TRIGGER trg_pref_update AFTER UPDATE OF statement, category ON preferences BEGIN INSERT INTO fts_preferences(fts_preferences, rowid, statement, category) VALUES ('delete', old.rowid, old.statement, old.category); INSERT INTO fts_preferences(rowid, statement, category) VALUES (new.rowid, new.statement, new.category); END`,
+		`DROP TRIGGER IF EXISTS trg_pref_delete`,
+		`CREATE TRIGGER trg_pref_delete AFTER DELETE ON preferences BEGIN INSERT INTO fts_preferences(fts_preferences, rowid, statement, category) VALUES ('delete', old.rowid, old.statement, old.category); END`,
 	}
 	for _, t := range triggers {
 		if _, err := conn.Exec(t); err != nil {

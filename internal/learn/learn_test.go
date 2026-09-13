@@ -128,3 +128,44 @@ func TestExtractStatedPreferenceWordBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyJudgedRelations exercises the four verdicts directly, without a
+// judge: same reinforces, refines rewrites + logs "refine", contradicts
+// weakens + opens a conflict + inserts the new side, new inserts at the
+// clamped confidence; an unknown target degrades to new.
+func TestApplyJudgedRelations(t *testing.T) {
+	db, cfg := testDB(t)
+	base, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 1.0, Relation: RelationNew, By: "test"})
+	if err != nil || base.Confidence != 0.95 {
+		t.Fatalf("new must clamp to 0.95: %+v %v", base, err)
+	}
+	same, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "x", Category: "Testing", Confidence: 0.5, Relation: RelationSame, TargetID: base.ID, By: "test"})
+	if same.ID != base.ID || same.ReinforcementCount == 0 && same.Confidence < base.Confidence {
+		t.Fatalf("same must reinforce the target: %+v", same)
+	}
+	ref, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests with named subtests.", Category: "Testing", Confidence: 0.5, Relation: RelationRefines, TargetID: base.ID, By: "test"})
+	if err != nil {
+		t.Fatalf("refines: %v", err)
+	}
+	if ref.ID != base.ID || ref.Statement != "Prefers table-driven tests with named subtests." {
+		t.Fatalf("refines must rewrite in place: %+v", ref)
+	}
+	var refines int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='refine'`).Scan(&refines)
+	if refines != 1 {
+		t.Fatalf("refine event: %d", refines)
+	}
+	con, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitReject}, Assessment{Statement: "Prefers one assertion per test.", Category: "Testing", Confidence: 0.7, Relation: RelationContradicts, TargetID: base.ID, By: "test"})
+	if con.ID == base.ID || con.Confidence != 0.7 {
+		t.Fatalf("contradicts must insert the new side: %+v", con)
+	}
+	var conflicts int
+	_ = db.QueryRow(`SELECT count(*) FROM conflicts WHERE resolved_at IS NULL`).Scan(&conflicts)
+	if conflicts != 1 {
+		t.Fatalf("contradicts must open a conflict: %d", conflicts)
+	}
+	unk, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers fast tests.", Category: "Testing", Confidence: 0.6, Relation: RelationSame, TargetID: "nope", By: "test"})
+	if unk.Statement != "Prefers fast tests." || unk.ID == base.ID {
+		t.Fatalf("unknown target must degrade to new: %+v", unk)
+	}
+}

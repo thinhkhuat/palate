@@ -1,7 +1,7 @@
 package render
 
 import (
-	"crypto/sha256"
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/judge"
+	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
 
@@ -134,7 +136,7 @@ func Lint(path string) []string {
 	return diags
 }
 
-func Reimport(conn *sql.DB, path string) (int, error) {
+func Reimport(conn *sql.DB, cfg config.Config, path string) (int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
@@ -162,15 +164,12 @@ func Reimport(conn *sql.DB, path string) (int, error) {
 			if err == nil {
 				continue
 			}
-			sum := sha256.Sum256([]byte(currentCat + "\x00" + stmt))
-			id := fmt.Sprintf("import-%x", sum[:8])
-			_, err = conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, trust_tier, veracity) VALUES(?,?,?,?,?,?,?,?,?)`,
-				id, currentCat, stmt, 0.4, 0.5, "imported", `["imported"]`, "IMPORTED", "imported")
-			if err == nil {
+			// Every imported line is judged like any other write: with a
+			// gateway it gets a real confidence and a same/refines/contradicts
+			// verdict against the rows already there; without one it lands at
+			// the imported weight (0.4). The tier stays IMPORTED either way.
+			if _, _, err := judge.Apply(context.Background(), conn, cfg, judge.Input{Statement: stmt, Signal: learn.SignalImported, Category: currentCat}, ""); err == nil {
 				imported++
-				// Through the same funnel as every other mutation, so the
-				// auto-maintained TASTE.md picks the import up immediately.
-				_ = storage.AppendEvent(conn, "import", fmt.Sprintf(`{"id":%q,"c":0.4,"signal":"imported"}`, id))
 			}
 		}
 	}
