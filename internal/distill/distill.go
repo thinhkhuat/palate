@@ -71,6 +71,14 @@ func redactBlock(conn *sql.DB, text string) string {
 	return strings.Join(redacted, "\n")
 }
 
+// Judge, when set, stores one distilled statement after judging it against
+// the live profile (relation new / same / refines / contradicts) — the write-
+// time dedup Command Code's learner gets by amending the taste file in place.
+// The CLI sets it to the judge package's Apply (the judge imports this package
+// for its Gateway, so the seam points this way); nil keeps learn.ApplySignal's
+// heuristic matching, which is what tests and the no-gateway path use.
+var Judge func(ctx context.Context, conn *sql.DB, cfg config.Config, s DistilledStatement) error
+
 // ApplyDistilled applies each distilled statement: a safety.Scan flag
 // drops it (censored or not — it is never stored), a statement identical
 // to its own evidence quote is refused as a verbatim leak of raw source
@@ -102,6 +110,16 @@ func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledState
 			continue
 		}
 
+		if Judge != nil {
+			if err := Judge(context.Background(), conn, cfg, s); err != nil {
+				storage.BumpDrop(conn, "llm_distilled_apply_error")
+				dropped++
+				continue
+			}
+			storage.BumpHit(conn, "llm_distilled")
+			applied++
+			continue
+		}
 		sig := learn.Signal{
 			Type:      learn.SignalLLMDistilled,
 			Statement: s.Statement,

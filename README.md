@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.4.1-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.5.0-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
@@ -15,8 +15,8 @@ Harness-native "taste" (like Command Code's closed one) works because the harnes
 
 - **Single Go binary. No CGO. SQLite-only.** `modernc.org/sqlite` + FTS5 + JSON+cosine (and `sqlite-vec` behind a build tag when you want it).
 - **Observable signals only:** `model_edit`, `user_correction`, `user_diff (w=0.6 hypothesis)`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` — no invented `accept/reject` primitive.
-- **Your LLM gateway is the taste brain.** With `PALATE_LLM_*` set, the model judges every explicit write (wording, category, confidence, and whether it is new / the same / a refinement / a contradiction of what is stored), distills transcripts, journals and git, and periodically consolidates the whole profile (`palate consolidate`: merge, rewrite, rescore, retire — review mode files proposals). Without a gateway the built-in heuristics run exactly as before.
-- **Push prewarm:** SessionStart injects your **whole profile** — the same lines as `TASTE.md`, grouped by category — once per session (2 000-token budget; over it, whole lines are dropped and the block says how many), plus a ~200-tok UserPromptSubmit block only when your *intent* changes. What you can review is exactly what the agent gets (Command Code parity).
+- **Your LLM gateway is the taste brain.** With `PALATE_LLM_*` set, the model judges every write — explicit *and* distilled — against the whole profile (wording, category, confidence, and whether it is new / the same / a refinement / a contradiction of what is stored, so a paraphrase reinforces the row instead of becoming a second bullet), distills transcripts, journals and git, and periodically consolidates the whole profile (`palate consolidate`: merge, rewrite, rescore, retire — review mode files proposals). Without a gateway the built-in heuristics run exactly as before.
+- **Push prewarm:** SessionStart injects your **whole profile** — the same lines as `TASTE.md`, grouped by category — once per session (2 000-token budget; over it, whole lines are dropped and the block says how many), plus a ~200-tok UserPromptSubmit block only when your *intent* changes. Whatever the detached learner stored since your last prompt is announced at the next one (`palate: since your last prompt — learned 1 …`) and handed to the model as a `<palate-learned>` block, so a preference learned at the previous turn applies from the next — Command Code's inline "taste learned" notices. An empty profile says so and that it fills itself in. What you can review is exactly what the agent gets (Command Code parity).
 - **One durable home, every harness.** `~/.claude/palate/` (override `PALATE_HOME`) holds the store for Claude Code, Codex, Command Code and ZCode alike — same placement as skill-concierge. A repo that still has `./.palate/palate.db` keeps that legacy layout by detection.
 - **TASTE.md is a render, kept current — not the truth.** The `events` log in `palate.db` is the source of truth; `TASTE.md` beside it is re-rendered after every write (hooks, CLI, MCP, distiller), each line tagged with its source and trust tier, so you can review what Palate learned without opening SQLite. `palate push` exports a git-shareable copy into the repo.
 
@@ -119,6 +119,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | `palate doctor` | Check sqlite, fts5, vector, 13 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
 | `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted`; `recall` prints the `id=` that `forget` takes, for memories and preferences alike |
 | `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns; with a gateway the model judges wording, category, confidence and relation, and the verdict is printed |
+| `palate learn {session,sessions,journals,repo}` | The distiller on demand: one transcript, every discovered transcript (8 readers), memsearch journals, or a git history — `repo` takes a local path, a GitHub `owner/repo`, or a clone URL (temp clone, cursor kept under the URL). The hooks run `session` for you unless `distill.mode: off` or the cwd is under `distill.skip_dirs` |
 | `palate consolidate` | Whole-profile review by the gateway: merge / rewrite / rescore / retire (auto after a backup, or proposals in `distill.mode: review`); auto-fired by SessionStart every `consolidate.every_events` events; also run by `sleep` |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
 | `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |
@@ -128,7 +129,7 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | `palate hook install [--harness H]` | Wire Claude Code + Command Code + ZCode hooks (idempotent; `--harness zcode-global` for `~/.zcode/cli/config.json`) |
 | `palate serve [--port]` | MCP stdio/SSE — `--port 4317` or `--port 127.0.0.1:4317`; with `PALATE_MCP_TOKEN` set every SSE request needs `Authorization: Bearer` (bare `:port` binds all interfaces: token or `127.0.0.1:`) |
 
-Config: [`config.yaml`](config.yaml) (weights, half-life — off by default, token budgets, trust tiers) + env overrides (`PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_MCP_TOKEN`).
+Config: [`config.yaml`](config.yaml) (weights, half-life — off by default, token budgets, trust tiers, `distill.mode: auto|review|off`, `distill.skip_dirs`) + env overrides (`PALATE_DB_PATH`, `PALATE_C_FLOOR`, `PALATE_HALF_LIFE_HOURS`, `PALATE_DISTILL_MODE`, `PALATE_MCP_TOKEN`).
 
 ---
 

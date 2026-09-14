@@ -41,7 +41,10 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 		return Block{Scope: "session"}, err
 	}
 	if n == 0 {
-		return Block{Content: "", Tokens: 0, Scope: "session"}, nil
+		// Command Code tells the agent the same thing when its taste file is
+		// empty: the feature exists and fills itself in.
+		content := fmt.Sprintf("<palate-prewarm scope=\"session\">\nNo preferences learned yet. Palate learns them automatically from your sessions (the Stop hook distills each turn); to record one now, call palate_prefer / palate_remember or run `palate prefer \"…\"`. Full profile, once there is one: %s\n</palate-prewarm>", cfg.TastePath())
+		return Block{Content: content, Tokens: estimateTokens(content), Scope: "session"}, nil
 	}
 	tail := "</palate-prewarm>"
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")

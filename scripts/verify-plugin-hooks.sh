@@ -129,6 +129,10 @@ extract_hooks | while IFS="$(printf '\t')" read -r event cmd; do
   # Form B: the direct CLI call the launcher must be indistinguishable from.
   (cd "$WB" && export "$(home_env "$WB" "$MODE")" && printf '%s' "$payloadB" | "$BIN" hook "$slug") > "$outB"
 
+  # Each form ran in its own temp dir and the output may name that dir (the
+  # profile path in the SessionStart block); mask it before comparing.
+  sed "s|$WA|<WORK>|g" "$outA" > "$outA.n" && mv "$outA.n" "$outA"
+  sed "s|$WB|<WORK>|g" "$outB" > "$outB.n" && mv "$outB.n" "$outB"
   if ! cmp -s "$outA" "$outB"; then
     echo "DRIFT on $event ($slug) [$MODE]:" >&2
     diff -u "$outB" "$outA" >&2 || true

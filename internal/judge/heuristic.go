@@ -27,6 +27,14 @@ func (HeuristicJudge) Assess(_ context.Context, conn *sql.DB, cfg config.Config,
 		// weight×0.5 — keep that quarantine level byte-for-byte.
 		conf = cfg.Weights.Imported
 	}
+	if in.Signal == learn.SignalLLMDistilled && in.Confidence > 0 {
+		// A distilled statement seeds at the distiller's own score, capped so
+		// one pass never looks certain — what ApplySignal did for this signal.
+		conf = learn.ClampConfidence(in.Confidence, cfg.CFloor)
+		if conf > 0.9 {
+			conf = 0.9
+		}
+	}
 	a := learn.Assessment{
 		Statement:  in.Statement,
 		Category:   cat,

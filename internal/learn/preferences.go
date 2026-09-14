@@ -542,6 +542,11 @@ func ClampConfidence(c, cFloor float64) float64 {
 //	contradicts → weaken the target, open a conflict, insert the new row
 func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Preference, error) {
 	w := cfg.WeightFor(string(sig.Type))
+	if sig.Type == SignalLLMDistilled && sig.Weight > 0 {
+		// A distilled statement reinforces at the distiller's own evidence
+		// score, as ApplySignal always did for this signal.
+		w = sig.Weight
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if a.Category == "" {
 		a.Category = InferCategoryFromStatement(a.Statement)

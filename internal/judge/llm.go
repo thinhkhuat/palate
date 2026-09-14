@@ -34,13 +34,14 @@ type verdict struct {
 }
 
 func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, in Input) (learn.Assessment, error) {
-	// The candidate's own hint (or the keyword guess) picks which rows the
-	// model compares against; the model may still move the category.
+	// The model compares against the whole active profile, not one category:
+	// a paraphrase filed elsewhere must still be recognised (Command Code's
+	// learner reads every taste file). The hint only seeds the category.
 	hint := in.Category
 	if hint == "" {
 		hint = learn.InferCategoryFromStatement(in.Statement)
 	}
-	existing, _ := learn.ActiveInCategory(conn, hint)
+	existing, _ := learn.ListPreferences(conn, false)
 	ids := map[string]bool{}
 	for _, p := range existing {
 		ids[p.ID] = true

@@ -332,7 +332,13 @@ func FormatGitEvidence(signals []GitSignal) string {
 // anyway. It returns the number of signals extracted alongside the
 // session-shaped Summary, since the CLI prints both.
 func LearnRepo(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gateway, repoPath, author string, maxCommits, maxSignals int) (int, Summary, error) {
-	cursorSHA, _, _ := GetCursor(conn, "git", repoPath)
+	return LearnRepoKeyed(ctx, conn, cfg, gw, repoPath, repoPath, author, maxCommits, maxSignals)
+}
+
+// LearnRepoKeyed is LearnRepo with the git cursor stored under cursorKey
+// instead of repoPath — for a temp clone, the URL it came from.
+func LearnRepoKeyed(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gateway, repoPath, cursorKey, author string, maxCommits, maxSignals int) (int, Summary, error) {
+	cursorSHA, _, _ := GetCursor(conn, "git", cursorKey)
 
 	commits, err := CollectCommits(repoPath, author, cursorSHA, maxCommits)
 	if err != nil {
@@ -360,13 +366,13 @@ func LearnRepo(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gateway
 	result, distillErr := Distill(ctx, conn, gw, prefs, "", FormatGitEvidence(signals))
 	if distillErr == nil {
 		applied, dropped := ApplyDistilled(conn, cfg, result.Statements)
-		if err := SetCursor(conn, "git", repoPath, newestSHA); err != nil {
+		if err := SetCursor(conn, "git", cursorKey, newestSHA); err != nil {
 			return len(signals), Summary{}, fmt.Errorf("set cursor: %w", err)
 		}
 		return len(signals), Summary{Applied: applied, Dropped: dropped, Advanced: true}, nil
 	}
 
-	attempts, err := RecordFailedAttempt(conn, "git", repoPath)
+	attempts, err := RecordFailedAttempt(conn, "git", cursorKey)
 	if err != nil {
 		return len(signals), Summary{}, fmt.Errorf("record failed attempt: %w", err)
 	}
@@ -374,7 +380,7 @@ func LearnRepo(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gateway
 		return len(signals), Summary{Reason: distillErr.Error()}, nil
 	}
 
-	if err := SetCursor(conn, "git", repoPath, newestSHA); err != nil {
+	if err := SetCursor(conn, "git", cursorKey, newestSHA); err != nil {
 		return len(signals), Summary{}, fmt.Errorf("set cursor (abandon): %w", err)
 	}
 	storage.BumpDrop(conn, "llm_distilled_window_abandoned")

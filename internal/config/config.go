@@ -2,6 +2,7 @@ package config
 
 import (
 	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -113,8 +114,54 @@ type LLM struct {
 	APIKey   string
 }
 
+// Distill controls the automatic learner the hooks spawn. Mode is auto
+// (write judged rows), review (write proposals) or off (never spawn it —
+// Command Code's user-wide taste-learning switch); PALATE_DISTILL_MODE
+// overrides. SkipDirs turns it off for any session whose cwd is under one of
+// the listed directories (its per-project "disabled"): reference clones,
+// other people's repos, anything you do not want mined. Explicit `palate
+// learn …` commands ignore both — they are the user asking.
 type Distill struct {
-	Mode string `yaml:"mode"`
+	Mode     string   `yaml:"mode"`
+	SkipDirs []string `yaml:"skip_dirs"`
+}
+
+// LearningOn reports whether the hooks may spawn the automatic learner.
+func (c Config) LearningOn() bool { return c.Distill.Mode != "off" }
+
+// LearningSkipped reports whether cwd (a hook's working directory) lies under
+// one of distill.skip_dirs. "" (unknown cwd) is never skipped. Paths are
+// compared as cleaned strings, not resolved through symlinks: list a directory
+// in the form the harness reports it.
+func (c Config) LearningSkipped(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	cwd = filepath.Clean(absHome(cwd))
+	for _, d := range c.Distill.SkipDirs {
+		if d == "" {
+			continue
+		}
+		d = filepath.Clean(absHome(d))
+		if cwd == d || strings.HasPrefix(cwd, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// LearningMode is the one-line description doctor prints.
+func (c Config) LearningMode() string {
+	mode := c.Distill.Mode
+	switch mode {
+	case "review", "off":
+	default:
+		mode = "auto"
+	}
+	if n := len(c.Distill.SkipDirs); n > 0 {
+		return fmt.Sprintf("%s (%d skipped dir%s)", mode, n, map[bool]string{true: "s", false: ""}[n != 1])
+	}
+	return mode
 }
 
 func Default() Config {
@@ -344,6 +391,12 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("PALATE_RENDER_AUTO"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Render.Auto = b
+		}
+	}
+	if v := os.Getenv("PALATE_DISTILL_MODE"); v != "" {
+		switch v {
+		case "auto", "review", "off":
+			c.Distill.Mode = v
 		}
 	}
 	if v := os.Getenv("PALATE_JUDGE"); v != "" {

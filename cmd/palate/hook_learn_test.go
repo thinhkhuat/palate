@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/thinhkhuat/palate/internal/distill"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
@@ -211,7 +214,6 @@ func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 	}
 }
 
-
 // SessionStart tells the user what was learned since the previous session
 // (Command Code's inline "taste learned" notices), and says nothing when
 // nothing changed. The first run on a home only seeds the cursor.
@@ -289,5 +291,178 @@ func TestSessionStartNoticeBucketsConsolidation(t *testing.T) {
 	out := runHook(t, `{"session_id":"m1","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
 	if !strings.Contains(out, "consolidated 1") || strings.Contains(out, "New:") {
 		t.Fatalf("consolidation must be its own bucket without a New: quote: %s", out)
+	}
+}
+
+// The next prompt after something was learned announces it (systemMessage)
+// and hands the model the new lines (additionalContext) — Command Code's
+// inline "taste learned" while you work.
+func TestUserPromptNoticeReportsLearned(t *testing.T) {
+	setupTempProject(t)
+	first := runHook(t, `{"prompt":"hello"}`, "hook", "user-prompt")
+	if strings.Contains(first, "systemMessage") {
+		t.Fatalf("first run must only seed the cursor, got %s", first)
+	}
+	if _, err := runCLI(t, "prefer", "Prefers inline notices about freshly learned taste"); err != nil {
+		t.Fatal(err)
+	}
+	out := runHook(t, `{"prompt":"carry on with the refactor"}`, "hook", "user-prompt")
+	var parsed struct {
+		SystemMessage      string `json:"systemMessage"`
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
+		t.Fatalf("hook output not JSON: %v\n%s", err, out)
+	}
+	if !strings.Contains(parsed.SystemMessage, "since your last prompt — learned 1") {
+		t.Fatalf("notice missing: %q", parsed.SystemMessage)
+	}
+	ctx := parsed.HookSpecificOutput.AdditionalContext
+	if !strings.Contains(ctx, "<palate-learned>") || !strings.Contains(ctx, "Prefers inline notices about freshly learned taste") || !strings.Contains(ctx, "Confidence: ") {
+		t.Fatalf("learned block missing or malformed: %q", ctx)
+	}
+}
+
+func TestUserPromptNoticeSilentWhenNothingNew(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "prefer", "Prefers quiet prompts when nothing changed"); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, `{"prompt":"seed"}`, "hook", "user-prompt")
+	out := runHook(t, `{"prompt":"nothing new here"}`, "hook", "user-prompt")
+	if strings.Contains(out, "systemMessage") || strings.Contains(out, "palate-learned") {
+		t.Fatalf("no new events, yet a notice was emitted: %s", out)
+	}
+}
+
+// distill.mode off and distill.skip_dirs keep both hooks from spawning the
+// learner; an unrelated cwd still spawns.
+func TestHooksHonourLearningOffAndSkipDirs(t *testing.T) {
+	setupTempProject(t)
+	t.Setenv("PALATE_LLM_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("PALATE_LLM_MODEL", "x")
+	calls := installSpawnSpy(t)
+
+	t.Setenv("PALATE_DISTILL_MODE", "off")
+	runHook(t, `{"session_id":"o1","transcript_path":"/tmp/t.jsonl","cwd":"/work/a"}`, "hook", "stop")
+	runHook(t, `{"session_id":"o1","transcript_path":"/tmp/t.jsonl","cwd":"/work/a"}`, "hook", "session-start")
+	if len(*calls) != 0 {
+		t.Fatalf("mode off must not spawn, got %+v", *calls)
+	}
+
+	t.Setenv("PALATE_DISTILL_MODE", "")
+	if err := os.WriteFile("config.yaml", []byte("db_path: .palate/palate.db\ndistill:\n  skip_dirs: [\"/work/clones\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, `{"session_id":"o2","transcript_path":"/tmp/t.jsonl","cwd":"/work/clones/foreign"}`, "hook", "stop")
+	if len(*calls) != 0 {
+		t.Fatalf("a skipped cwd must not spawn, got %+v", *calls)
+	}
+	runHook(t, `{"session_id":"o3","transcript_path":"/tmp/t.jsonl","cwd":"/work/mine"}`, "hook", "stop")
+	if len(*calls) != 1 {
+		t.Fatalf("an unrelated cwd must spawn once, got %+v", *calls)
+	}
+}
+
+func TestDoctorLearningLine(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "init"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PALATE_DISTILL_MODE", "review")
+	out, err := runCLI(t, "doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "learning: review") {
+		t.Fatalf("doctor must print the learning mode:\n%s", out)
+	}
+}
+
+// init seeds the notice cursor, so a preference stated before the first hook
+// ever runs is announced by that first hook instead of swallowed.
+func TestInitSeedsNoticeCursor(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "prefer", "Prefers the very first hook to announce this"); err != nil {
+		t.Fatal(err)
+	}
+	out := runHook(t, `{"prompt":"first ever prompt"}`, "hook", "user-prompt")
+	if !strings.Contains(out, "since your last prompt — learned 1") || !strings.Contains(out, "Prefers the very first hook to announce this") {
+		t.Fatalf("first hook after init must announce the backlog: %s", out)
+	}
+}
+
+// A dead gateway during learn repo is a visible, non-zero failure — never
+// "0 preferences" with exit 0.
+func TestLearnRepoDeadGatewayFails(t *testing.T) {
+	setupTempProject(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("package main\n\nfunc run(n int) int {\n\treturn n\n}\n")
+	git("add", "main.go")
+	git("commit", "-q", "-m", "first")
+	// A replaced line (removed + added in one hunk) is what ExtractSignals
+	// turns into a correction signal.
+	write("package main\n\nfunc run(n int) int {\n\treturn max(n, 0)\n}\n")
+	git("commit", "-q", "-am", "guard negative input")
+
+	t.Setenv("PALATE_LLM_ENDPOINT", "http://127.0.0.1:1/v1/chat/completions")
+	t.Setenv("PALATE_LLM_MODEL", "x")
+	_, err := runCLI(t, "learn", "repo", "--all-authors", repo)
+	if err == nil || !strings.Contains(err.Error(), "not advanced") {
+		t.Fatalf("dead gateway must fail visibly, got err=%v", err)
+	}
+}
+
+// The wiring main() performs: with the seam set, a distilled paraphrase of an
+// existing row is judged (heuristic here: exact match → same) and reinforces
+// it instead of landing as a second row.
+func TestWireDistillJudgeRoutesDistilledWrites(t *testing.T) {
+	setupTempProject(t)
+	wireDistillJudge()
+	t.Cleanup(func() { distill.Judge = nil })
+	cfg := loadConfig()
+	db := openDB(cfg)
+	defer storage.Close()
+	seed, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers table-driven tests.", Category: "Testing"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, dropped := distill.ApplyDistilled(db, cfg, []distill.DistilledStatement{{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.7, Evidence: "again"}})
+	if applied != 1 || dropped != 0 {
+		t.Fatalf("applied=%d dropped=%d", applied, dropped)
+	}
+	var rows int
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&rows)
+	var c float64
+	_ = db.QueryRow(`SELECT confidence FROM preferences WHERE id=?`, seed.ID).Scan(&c)
+	if rows != 1 || c <= seed.Confidence {
+		t.Fatalf("judged same must reinforce the one row: rows=%d c %.2f→%.2f", rows, seed.Confidence, c)
+	}
+	var by int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='reinforce' AND payload LIKE '%"by":"heuristic"%'`).Scan(&by)
+	if by != 1 {
+		t.Fatal("the reinforce event must name the judge")
 	}
 }

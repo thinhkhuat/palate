@@ -83,11 +83,13 @@ func TestSessionPrewarmBudgetDropsWholeLines(t *testing.T) {
 	}
 }
 
+// An empty profile still tells the agent the feature exists and fills itself
+// in (Command Code's "No preferences learned yet … learned automatically").
 func TestSessionPrewarmEmptyProfile(t *testing.T) {
 	db, cfg := openMem(t)
 	block, err := SessionPrewarm(db, cfg)
-	if err != nil || block.Content != "" || block.Tokens != 0 {
-		t.Fatalf("empty profile must inject nothing, got %+v err=%v", block, err)
+	if err != nil || !strings.Contains(block.Content, "No preferences learned yet") || !strings.Contains(block.Content, "automatically") || strings.Contains(block.Content, "## ") {
+		t.Fatalf("empty profile must explain itself without headings, got %+v err=%v", block, err)
 	}
 }
 

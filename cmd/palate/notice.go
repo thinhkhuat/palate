@@ -12,23 +12,28 @@ import (
 	"github.com/thinhkhuat/palate/internal/distill"
 )
 
-// noticeCursorFile remembers the last event a SessionStart notice covered.
+// noticeCursorFile remembers the last event a notice covered.
 const noticeCursorFile = "notice_cursor"
 
 // learnedSinceNotice tells the user what Palate learned since the previous
-// SessionStart on this home — Command Code shows the same thing as inline
-// "taste learned / upgraded / downgraded" notices while you work. It reads
-// the events past the stored cursor, advances the cursor, and returns "" when
-// nothing changed. The first run on a home only seeds the cursor: dumping the
-// whole history as "news" would be noise.
-func learnedSinceNotice(db *sql.DB, cfg config.Config) string {
-	// Two SessionStarts on one home (two panes, a resume racing a startup)
-	// must not both claim the same delta: the cursor is read and advanced
-	// under the same lock the distiller uses. A busy lock means another
-	// hook is reporting it right now — say nothing rather than repeat it.
+// notice on this home — Command Code shows the same thing as inline "taste
+// learned / upgraded / downgraded" notices while you work. SessionStart and
+// UserPromptSubmit both call it (since names the gap: "since your last
+// session" / "since your last prompt"). It reads the events past the stored
+// cursor, advances the cursor, and returns the one-line notice plus a
+// <palate-learned> block listing the rows created or reworded in that span —
+// what the model must apply from the next turn on, since the SessionStart
+// profile predates them. Both are "" when nothing changed. The first run on a
+// home only seeds the cursor: dumping the whole history as "news" would be
+// noise.
+func learnedSinceNotice(db *sql.DB, cfg config.Config, since string) (notice, learnedBlock string) {
+	// Two hooks on one home (two panes, a resume racing a startup) must not
+	// both claim the same delta: the cursor is read and advanced under the
+	// same lock the distiller uses. A busy lock means another hook is
+	// reporting it right now — say nothing rather than repeat it.
 	release, ok := distill.AcquireLearnLock(cfg.StatePath("notice.lock"))
 	if !ok {
-		return ""
+		return "", ""
 	}
 	defer release()
 	var last int64
@@ -38,37 +43,43 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config) string {
 	cursor, perr := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 	if err != nil || perr != nil {
 		// Missing or unreadable cursor: seed it. Never dump the whole
-		// history as "since your last session".
+		// history as news.
 		_ = os.WriteFile(path, []byte(strconv.FormatInt(last, 10)), 0o600)
-		return ""
+		return "", ""
 	}
 	if last <= cursor {
-		return ""
+		return "", ""
 	}
 	rows, err := db.Query(`SELECT event_type, payload FROM events WHERE id > ? ORDER BY id`, cursor)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer rows.Close()
 	var learned, refined, consolidated, retired int
-	var newIDs []string
+	var newIDs, changedIDs []string
+	seen := map[string]bool{}
 	for rows.Next() {
 		var typ, payload string
 		if rows.Scan(&typ, &payload) != nil {
 			continue
 		}
+		var p struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal([]byte(payload), &p)
 		switch typ {
 		case "create":
 			learned++
-			var p struct {
-				ID string `json:"id"`
-			}
-			_ = json.Unmarshal([]byte(payload), &p)
 			if p.ID != "" {
 				newIDs = append(newIDs, p.ID)
 			}
 		case "refine", "reinforce", "correct":
 			refined++
+			if typ == "refine" && p.ID != "" && !seen[p.ID] {
+				// A reworded row is news to the model too.
+				seen[p.ID] = true
+				changedIDs = append(changedIDs, p.ID)
+			}
 		case "consolidate_merge", "consolidate_rewrite", "consolidate_rescore":
 			// Housekeeping over rows the user already knows — never "new".
 			consolidated++
@@ -78,10 +89,10 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config) string {
 	}
 	_ = os.WriteFile(path, []byte(strconv.FormatInt(last, 10)), 0o600)
 	if learned+refined+consolidated+retired == 0 {
-		return ""
+		return "", ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "palate: since your last session — learned %d, refined %d, consolidated %d, retired %d.", learned, refined, consolidated, retired)
+	fmt.Fprintf(&b, "palate: %s — learned %d, refined %d, consolidated %d, retired %d.", since, learned, refined, consolidated, retired)
 	shown := 0
 	for _, id := range newIDs {
 		if shown == 3 {
@@ -107,5 +118,36 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config) string {
 		shown++
 	}
 	fmt.Fprintf(&b, " (full profile: %s)", cfg.TastePath())
-	return b.String()
+	return b.String(), learnedLines(db, cfg, append(newIDs, changedIDs...), since)
+}
+
+// seedNoticeCursor writes the cursor at the current event head when no
+// cursor exists yet (palate init on a fresh home). An existing cursor is
+// left alone.
+func seedNoticeCursor(db *sql.DB, cfg config.Config) {
+	path := cfg.StatePath(noticeCursorFile)
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	var last int64
+	_ = db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&last)
+	_ = os.WriteFile(path, []byte(strconv.FormatInt(last, 10)), 0o600)
+}
+
+// learnedLines renders the rows behind ids in the profile's own bullet shape
+// inside a <palate-learned> block, or "" when none of them is still active.
+func learnedLines(db *sql.DB, cfg config.Config, ids []string, since string) string {
+	var lines []string
+	for _, id := range ids {
+		var cat, stmt, source, tier string
+		var c float64
+		if db.QueryRow(`SELECT category, statement, confidence, source, trust_tier FROM preferences WHERE id=? AND valid_until IS NULL`, id).Scan(&cat, &stmt, &c, &source, &tier) != nil {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s Confidence: %.2f (%s, %s)", cat, strings.TrimSuffix(stmt, ".")+".", c, source, tier))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("<palate-learned>\nPreferences learned or reworded %s — apply them from now on (full profile: %s):\n%s\n</palate-learned>", since, cfg.TastePath(), strings.Join(lines, "\n"))
 }

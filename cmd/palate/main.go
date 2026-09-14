@@ -121,10 +121,17 @@ func newRootCmd() *cobra.Command {
 }
 
 func main() {
+	wireDistillJudge()
 	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
+
+// wireDistillJudge routes every distilled statement through the judge before
+// it is stored (same / refines / contradicts / new), like every explicit
+// write. The seam lives in distill because judge imports it; main() calls
+// this once, and the test that proves the wiring calls it too.
+func wireDistillJudge() { distill.Judge = judge.ApplyDistilled }
 
 func cmdInit() *cobra.Command {
 	return &cobra.Command{
@@ -139,7 +146,10 @@ func cmdInit() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_ = db
+			// Seed the notice cursor now, so everything recorded after init —
+			// including preferences stated before the first hook ever runs —
+			// is announced instead of swallowed by the first hook's seeding.
+			seedNoticeCursor(db, cfg)
 			storage.Close()
 			fmt.Printf("palate initialized: home %s (%s)\n", cfg.Home, modeName(cfg))
 			fmt.Println("db:", cfg.DBPath)
@@ -163,6 +173,7 @@ func cmdDoctor() *cobra.Command {
 			fmt.Printf("db: %s\n", cfg.DBPath)
 			fmt.Printf("taste: %s (auto-render %s)\n", cfg.TastePath(), map[bool]string{true: "on", false: "off"}[cfg.Render.Auto])
 			fmt.Printf("judge: %s\n", judge.Mode(cfg))
+			fmt.Printf("learning: %s\n", cfg.LearningMode())
 			if bak := storage.NewestBackup(cfg.BackupDir()); bak != "" {
 				fmt.Printf("backup: newest %s\n", bak)
 			} else {
@@ -922,6 +933,7 @@ func cmdHook() *cobra.Command {
 				SessionID      string `json:"session_id"`
 				TranscriptPath string `json:"transcript_path"`
 				Source         string `json:"source"` // startup | resume | clear | compact
+				CWD            string `json:"cwd"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
 			cfg := loadConfig()
@@ -932,7 +944,7 @@ func cmdHook() *cobra.Command {
 			}
 			defer storage.Close()
 			handleStateWalkUserDiffs(db, cfg)
-			if cfg.LLMConfigured() && input.TranscriptPath != "" {
+			if cfg.LLMConfigured() && input.TranscriptPath != "" && cfg.LearningOn() && !cfg.LearningSkipped(input.CWD) {
 				// Detached, fire-and-forget: this must never make the hook
 				// wait on the distiller's LLM call.
 				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
@@ -950,7 +962,9 @@ func cmdHook() *cobra.Command {
 			// A compaction restarts the same session; "since your last session"
 			// would be wrong there, so the notice waits for the next real start.
 			if input.Source != "compact" {
-				if notice := learnedSinceNotice(db, cfg); notice != "" {
+				// The learned block is not needed here: the profile below
+				// already carries every row.
+				if notice, _ := learnedSinceNotice(db, cfg, "since your last session"); notice != "" {
 					out["systemMessage"] = notice
 				}
 			}
@@ -1002,16 +1016,32 @@ func cmdHook() *cobra.Command {
 			if input.Prompt == "" {
 				return nil
 			}
-			if block, fired, _ := prewarm.GoalPrewarm(db, cfg, input.Prompt); fired {
-				out := map[string]interface{}{
-					"hookSpecificOutput": map[string]interface{}{
-						"hookEventName":     "UserPromptSubmit",
-						"additionalContext": block.Content,
-					},
+			out := map[string]interface{}{}
+			var ctxParts []string
+			// What the detached learner stored since the last notice (a
+			// Stop-hook distill, an MCP write from another pane) is announced
+			// here — Command Code's inline "taste learned" — and handed to the
+			// model, whose SessionStart profile predates it.
+			if notice, learned := learnedSinceNotice(db, cfg, "since your last prompt"); notice != "" {
+				out["systemMessage"] = notice
+				if learned != "" {
+					ctxParts = append(ctxParts, learned)
 				}
-				b, _ := json.Marshal(out)
-				fmt.Println(string(b))
 			}
+			if block, fired, _ := prewarm.GoalPrewarm(db, cfg, input.Prompt); fired {
+				ctxParts = append(ctxParts, block.Content)
+			}
+			if len(ctxParts) > 0 {
+				out["hookSpecificOutput"] = map[string]interface{}{
+					"hookEventName":     "UserPromptSubmit",
+					"additionalContext": strings.Join(ctxParts, "\n"),
+				}
+			}
+			if len(out) == 0 {
+				return nil
+			}
+			b, _ := json.Marshal(out)
+			fmt.Println(string(b))
 			return nil
 		},
 	})
@@ -1056,6 +1086,7 @@ func cmdHook() *cobra.Command {
 			var input struct {
 				SessionID      string `json:"session_id"`
 				TranscriptPath string `json:"transcript_path"`
+				CWD            string `json:"cwd"`
 				Files          []struct {
 					Path      string `json:"path"`
 					HashAfter string `json:"hash_after"`
@@ -1091,7 +1122,7 @@ func cmdHook() *cobra.Command {
 				refreshModelEdits(modelEdits)
 			}
 			_ = saveModelEdits(statePath, modelEdits)
-			if cfg.LLMConfigured() && input.TranscriptPath != "" {
+			if cfg.LLMConfigured() && input.TranscriptPath != "" && cfg.LearningOn() && !cfg.LearningSkipped(input.CWD) {
 				// Detached, fire-and-forget: this must never make the hook
 				// wait on the distiller's LLM call.
 				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
@@ -1598,9 +1629,10 @@ func cmdLearnSession() *cobra.Command {
 	var harness string
 	var verbose bool
 	c := &cobra.Command{
-		Use:   "session <path>",
-		Short: "Learn preferences from one transcript",
-		Args:  cobra.ExactArgs(1),
+		Use:          "session <path>",
+		Short:        "Learn preferences from one transcript",
+		SilenceUsage: true,
+		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			if !cfg.LLMConfigured() {
@@ -1644,15 +1676,12 @@ func cmdLearnSession() *cobra.Command {
 			printLearnOutcome(summary)
 			if verbose {
 				fmt.Println("gateway model:", cfg.LLM.Model)
-				if !summary.Skipped && !summary.Advanced {
-					fmt.Println("reason:", summary.Reason)
-				}
 			}
-			return nil
+			return learnFailure(summary)
 		},
 	}
 	c.Flags().StringVar(&harness, "harness", "", "harness override: claude_code|command_code|pi|codex|opencode|gemini_cli|memsearch|zcode")
-	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model and, on a non-advancing run, the reason")
+	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model")
 	return c
 }
 
@@ -1750,9 +1779,10 @@ func cmdLearnRepo() *cobra.Command {
 	var maxCommits, maxSignals int
 	var allAuthors, verbose bool
 	c := &cobra.Command{
-		Use:   "repo [path]",
-		Short: "Learn preferences from a git repository's commit history",
-		Args:  cobra.MaximumNArgs(1),
+		Use:          "repo [path|owner/repo|url]",
+		Short:        "Learn preferences from a git repository's commit history (local path, GitHub owner/repo, or clone URL)",
+		SilenceUsage: true,
+		Args:         cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			if !cfg.LLMConfigured() {
@@ -1767,12 +1797,33 @@ func cmdLearnRepo() *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			repoPath, err := filepath.Abs(path)
-			if err != nil {
-				return fmt.Errorf("resolve path: %w", err)
+			var repoPath, cursorKey string
+			if url, remote := distill.RepoSource(path); remote {
+				// Command Code parity: `owner/repo` or a clone URL is fetched
+				// into a temp dir, learned, and removed; the cursor lives under
+				// the URL so a second run only sees new commits.
+				dir, cleanup, err := distill.CloneSource(cmd.Context(), url)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+				repoPath, cursorKey = dir, url
+			} else {
+				abs, err := filepath.Abs(path)
+				if err != nil {
+					return fmt.Errorf("resolve path: %w", err)
+				}
+				repoPath, cursorKey = abs, abs
 			}
 
 			author := ""
+			if cursorKey != repoPath && !allAuthors {
+				// A fresh clone answers `git config user.email` with the
+				// operator's global identity, which proves nothing about who
+				// committed there; a remote source learns from every author.
+				fmt.Fprintln(os.Stderr, "palate: learn repo: remote source — learning from all authors")
+				allAuthors = true
+			}
 			if !allAuthors {
 				email, err := distill.RepoAuthorEmail(repoPath)
 				if err != nil {
@@ -1794,24 +1845,21 @@ func cmdLearnRepo() *cobra.Command {
 			defer release()
 			gw, _ := distill.NewGatewayFromEnv(cfg)
 
-			signalCount, summary, err := distill.LearnRepo(cmd.Context(), db, cfg, gw, repoPath, author, maxCommits, maxSignals)
+			signalCount, summary, err := distill.LearnRepoKeyed(cmd.Context(), db, cfg, gw, repoPath, cursorKey, author, maxCommits, maxSignals)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("%d signals -> %d preferences (%d applied, %d dropped)\n", signalCount, summary.Applied+summary.Dropped, summary.Applied, summary.Dropped)
 			if verbose {
 				fmt.Println("gateway model:", cfg.LLM.Model)
-				if !summary.Skipped && !summary.Advanced {
-					fmt.Println("reason:", summary.Reason)
-				}
 			}
-			return nil
+			return learnFailure(summary)
 		},
 	}
 	c.Flags().IntVar(&maxCommits, "max-commits", 200, "maximum commits to scan")
 	c.Flags().IntVar(&maxSignals, "max-signals", 50, "maximum before/after signals to extract")
 	c.Flags().BoolVar(&allAuthors, "all-authors", false, "learn from every commit author, not just git config user.email")
-	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model and, on a non-advancing run, the reason")
+	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model")
 	return c
 }
 
@@ -1828,6 +1876,24 @@ func runLearnLoop(ctx context.Context, db *sql.DB, cfg config.Config, gw *distil
 		fmt.Print(t.Path + ": ")
 		printLearnOutcome(summary)
 	}
+}
+
+// learnFailure turns a non-advancing run (the gateway failed and the cursor
+// stayed put) into a visible, non-zero outcome: a dead gateway must never
+// read like "nothing worth learning". A forced abandon is reported too, as a
+// warning, since the window is lost. Skipped and clean runs return nil.
+func learnFailure(s distill.Summary) error {
+	if s.Skipped {
+		return nil
+	}
+	if s.Abandoned {
+		fmt.Fprintf(os.Stderr, "palate: learn: window abandoned after repeated failures (%s)\n", s.Reason)
+		return nil
+	}
+	if !s.Advanced {
+		return fmt.Errorf("learn: not advanced — %s (cursor kept; rerun when the gateway is back)", s.Reason)
+	}
+	return nil
 }
 
 func printLearnOutcome(s distill.Summary) {

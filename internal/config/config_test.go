@@ -1,9 +1,9 @@
 package config
 
 import (
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -247,7 +247,7 @@ func TestSeedMatchesDefaults(t *testing.T) {
 		t.Fatalf("uncommented seed does not parse: %v\n%s", err, strings.Join(uncommented, "\n"))
 	}
 	d := Default()
-	if fromSeed.CFloor != d.CFloor || fromSeed.HalfLifeHours != d.HalfLifeHours || fromSeed.Weights != d.Weights || fromSeed.TokenBudgets != d.TokenBudgets || fromSeed.Hybrid != d.Hybrid || fromSeed.Distill != d.Distill {
+	if fromSeed.CFloor != d.CFloor || fromSeed.HalfLifeHours != d.HalfLifeHours || fromSeed.Weights != d.Weights || fromSeed.TokenBudgets != d.TokenBudgets || fromSeed.Hybrid != d.Hybrid || fromSeed.Distill.Mode != d.Distill.Mode || len(fromSeed.Distill.SkipDirs) != 0 {
 		t.Fatalf("seed.yaml (uncommented) drifted from Default():\nseed=%+v\ndef =%+v", fromSeed, d)
 	}
 }
@@ -277,5 +277,42 @@ func TestRelativeDBPathIsAnchoredToCwd(t *testing.T) {
 	cfg = resolveIn(t, cwd, home, "", "rel/env.db")
 	if cfg.DBPath != filepath.Join(cwd, "rel", "env.db") {
 		t.Fatalf("relative PALATE_DB_PATH must be anchored too: %q", cfg.DBPath)
+	}
+}
+
+func TestDistillModeEnvAndSkipDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PALATE_DISTILL_MODE", "off")
+	cfg := resolveIn(t, t.TempDir(), home, "", "")
+	if cfg.LearningOn() {
+		t.Fatal("PALATE_DISTILL_MODE=off must turn the automatic learner off")
+	}
+	if cfg.LearningMode() != "off" {
+		t.Fatalf("LearningMode = %q, want off", cfg.LearningMode())
+	}
+	t.Setenv("PALATE_DISTILL_MODE", "bogus")
+	cfg = resolveIn(t, t.TempDir(), home, "", "")
+	if !cfg.LearningOn() || cfg.Distill.Mode != "auto" {
+		t.Fatalf("an unknown mode must be ignored, got %q", cfg.Distill.Mode)
+	}
+
+	cfg.Distill.SkipDirs = []string{"~/ref", "/opt/clones/"}
+	t.Setenv("HOME", home)
+	for cwd, want := range map[string]bool{
+		home + "/ref":                  true,
+		home + "/ref/some/repo":        true,
+		home + "/reference":            false,
+		"/opt/clones/x":                true,
+		"/opt/clones":                  true,
+		"/opt/clones-mine/y":           false,
+		"":                             false,
+		home + "/in-PROD/MY-WORKBENCH": false,
+	} {
+		if got := cfg.LearningSkipped(cwd); got != want {
+			t.Fatalf("LearningSkipped(%q) = %v, want %v", cwd, got, want)
+		}
+	}
+	if cfg.LearningMode() != "auto (2 skipped dirs)" {
+		t.Fatalf("LearningMode = %q", cfg.LearningMode())
 	}
 }

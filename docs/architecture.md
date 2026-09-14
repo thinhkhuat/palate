@@ -23,8 +23,15 @@ Signal → safety gate → `learn.ApplySignal` → `preferences` + `events` → 
 
 Distiller path (optional, only when `PALATE_LLM_*` is set): Transcript/git
 evidence → `distill.Distill` (secret-redact → prompt → gateway → parse) →
-safety gate → `learn.ApplySignal` (`llm_distilled`) → `preferences` +
-`events` — same downstream path as every other signal from there.
+safety gate → `distill.Judge` seam (the CLI sets it to `judge.ApplyDistilled`:
+one more gateway call that compares the statement with every active row and
+returns new / same / refines / contradicts) → `learn.ApplyJudged`
+(`llm_distilled`) → `preferences` + `events` — same downstream path as every
+explicit write. Without the seam (tests, no gateway) `learn.ApplySignal`'s
+heuristic matching runs instead. The hooks skip the spawn under
+`distill.mode: off` or a cwd inside `distill.skip_dirs`; the next
+UserPromptSubmit announces what landed and hands the model the new rows as
+`<palate-learned>`.
 
 ## What is not wired
 

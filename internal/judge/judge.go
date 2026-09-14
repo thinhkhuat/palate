@@ -29,6 +29,10 @@ type Input struct {
 	Signal    learn.SignalType
 	// Category is a hint; "" lets the judge decide.
 	Category string
+	// Confidence is the caller's evidence-based score when it has one (the
+	// distiller saw the transcript; the judge sees only the wording). 0 means
+	// none: the judge scores from the wording alone.
+	Confidence float64
 }
 
 // Judge assesses a candidate write against the store.
@@ -76,7 +80,7 @@ func Apply(ctx context.Context, conn *sql.DB, cfg config.Config, in Input, evide
 	} else if j.Name() == "llm" {
 		storage.BumpHit(conn, "judge_llm")
 	}
-	sig := learn.Signal{Type: in.Signal, Statement: a.Statement, Category: a.Category, Evidence: evidence}
+	sig := learn.Signal{Type: in.Signal, Statement: a.Statement, Category: a.Category, Evidence: evidence, Weight: in.Confidence}
 	p, err := learn.ApplyJudged(conn, cfg, sig, a)
 	return p, a, err
 }
@@ -94,6 +98,14 @@ func Correct(ctx context.Context, conn *sql.DB, cfg config.Config, c learn.Corre
 	payload, _ := json.Marshal(c)
 	_ = storage.AppendEvent(conn, "correct", string(payload))
 	return p, a, nil
+}
+
+// ApplyDistilled is the distill.Judge seam: one distilled statement, judged
+// against the whole profile and stored through Apply with the distiller's own
+// confidence as the hint and its evidence on the event.
+func ApplyDistilled(ctx context.Context, conn *sql.DB, cfg config.Config, s distill.DistilledStatement) error {
+	_, _, err := Apply(ctx, conn, cfg, Input{Statement: s.Statement, Signal: learn.SignalLLMDistilled, Category: s.Category, Confidence: s.Confidence}, s.Evidence)
+	return err
 }
 
 // Verdict formats what a write did, for the CLI/MCP reply: the relation, the

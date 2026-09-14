@@ -321,7 +321,19 @@ stripped before it leaves the machine.
 **Live learning (no command to run):** once `PALATE_LLM_*` is set, the
 `Stop` and `SessionStart` hooks (§2.1) spawn `palate learn session` as a
 detached, fire-and-forget child on every turn — the hook itself never waits
-on the LLM call, so a slow or dead gateway never adds hook latency.
+on the LLM call, so a slow or dead gateway never adds hook latency. Each
+distilled statement is then judged against the whole profile before it is
+stored (same / refines / contradicts / new), exactly like an explicit write,
+so a paraphrase reinforces the existing row instead of adding a duplicate.
+What landed is announced at your next prompt (`palate: since your last prompt
+— learned 1, …`) and handed to the model as a `<palate-learned>` block.
+
+Turn the automatic learner off with `distill.mode: off` (or
+`PALATE_DISTILL_MODE=off`), or only for some directories with
+`distill.skip_dirs: ["~/ref", "~/in-PROD/CLONED"]` — a session whose cwd is
+under one of them is never mined (reference clones, other people's repos).
+Explicit `palate learn …` commands ignore both. `palate doctor` prints
+`learning: auto|review|off (+N skipped dirs)`.
 
 **On-demand learning (explicit commands):**
 
@@ -329,7 +341,7 @@ on the LLM call, so a slow or dead gateway never adds hook latency.
 palate learn session <path> [--harness H] [--verbose]     # one transcript
 palate learn sessions [--harness H] [--project P] [--all] [--include-experimental]
 palate learn journals [--include-global]                   # memsearch only
-palate learn repo [path] [--max-commits N] [--max-signals N] [--all-authors]
+palate learn repo [path|owner/repo|url] [--max-commits N] [--max-signals N] [--all-authors]
 ```
 
 `sessions` runs discovery + windowing across every registered reader (Claude
@@ -340,9 +352,13 @@ runs under `--include-experimental` (distinct from ZCode's hook-based
 *live* learning in §2.1, which is unaffected). `journals` scans
 project-local `.memsearch/memory/*.md` only, unless `--include-global` opts
 into the user's global journal directory (printed once, never silent).
-`repo [path]` walks git history (default: current author's own commits only
-— `--all-authors` opts out) and is capped by both `--max-commits` and
-`--max-signals`.
+`repo` walks git history (default: current author's own commits only —
+`--all-authors` opts out) and is capped by both `--max-commits` and
+`--max-signals`. A GitHub `owner/repo` or a clone URL is cloned into a temp
+dir (full history, removed afterwards; private repos authenticate through
+git's own credential helper), learned from every author (a fresh clone
+cannot tell which commits are yours), and its cursor is kept under the URL,
+so a second run only sees new commits.
 
 Re-running the same command is a no-op once a transcript/commit range has
 already been distilled — a per-source cursor tracks how far each was
@@ -350,9 +366,12 @@ analyzed, so nothing is re-sent to the gateway or re-learned twice.
 
 `distill.mode` in [`config.yaml`](config.yaml) controls whether a distilled
 statement — and every consolidation action — lands automatically (`auto`, the
-default) or as a proposal awaiting `palate promote` (`review`), the human-gate
-option if you'd rather approve each one. Cost: one gateway call per explicit
-write, one per distilled transcript batch, one per consolidation pass.
+default), as a proposal awaiting `palate promote` (`review`), the human-gate
+option if you'd rather approve each one, or not at all from the hooks
+(`off`). Cost: one gateway call per explicit
+write; per distilled transcript batch, one extraction call plus one judge
+call for each statement it returns (the judge sees the whole profile, which
+is a few dozen lines for a personal taste store); one per consolidation pass.
 
 ## 6. After install — smoke checklist (run for every harness)
 

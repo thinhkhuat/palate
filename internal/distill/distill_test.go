@@ -2,6 +2,7 @@ package distill
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -223,5 +224,36 @@ func TestDistillFinalFailureBumpsParseCounter(t *testing.T) {
 	}
 	if drops != 1 {
 		t.Fatalf("llm_distilled_parse drops = %d, want 1", drops)
+	}
+}
+
+// TestApplyDistilledJudgeSeam: with distill.Judge set, every clean statement
+// goes through the seam (and none through ApplySignal); the safety drops still
+// happen before the seam sees anything.
+func TestApplyDistilledJudgeSeam(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+	var seen []string
+	Judge = func(_ context.Context, _ *sql.DB, _ config.Config, s DistilledStatement) error {
+		seen = append(seen, s.Statement)
+		return nil
+	}
+	t.Cleanup(func() { Judge = nil })
+
+	statements := []DistilledStatement{
+		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.7, Evidence: "said so"},
+		{Statement: "Uses API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890 in scripts.", Category: "General", Confidence: 0.8, Evidence: "pasted a key"},
+	}
+	applied, dropped := ApplyDistilled(db, cfg, statements)
+	if applied != 1 || dropped != 1 {
+		t.Fatalf("applied=%d dropped=%d, want 1,1", applied, dropped)
+	}
+	if len(seen) != 1 || seen[0] != "Prefers table-driven tests." {
+		t.Fatalf("seam saw %v, want exactly the clean statement", seen)
+	}
+	var count int
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&count)
+	if count != 0 {
+		t.Fatalf("the seam owns the write: ApplySignal must not have inserted, got %d rows", count)
 	}
 }

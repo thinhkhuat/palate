@@ -246,3 +246,86 @@ func TestLLMJudgeStripsFenceAndClamps(t *testing.T) {
 
 // keep the distill import honest (NewGatewayFromEnv is what For uses)
 var _ = distill.NewGatewayFromEnv
+
+// TestDistilledJudgedSameReinforces: a distilled paraphrase judged "same" by
+// the model reinforces the existing row at the distiller's own confidence —
+// no second bullet, whatever category the distiller guessed.
+func TestDistilledJudgedSameReinforces(t *testing.T) {
+	db := testDB(t)
+	seed, err := learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers table-driven tests.", Category: "Testing", Weight: 0.5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := fakeGateway(t, verdictJSON("Prefers table-driven tests.", "Testing", 0.6, "same", seed.ID))
+	cfg := llmCfg(t, srv)
+
+	before := seed.Confidence
+	if err := ApplyDistilled(context.Background(), db, cfg, distill.DistilledStatement{Statement: "Likes tests laid out as a table of cases.", Category: "Workflow", Confidence: 0.6, Evidence: "asked for a case table"}); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	_ = db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("a judged 'same' must not add a row, got %d", rows)
+	}
+	var c float64
+	_ = db.QueryRow(`SELECT confidence FROM preferences WHERE id=?`, seed.ID).Scan(&c)
+	want := learn.Reinforce(before, 0.6, config.Default().LearningRate, config.Default().CFloor)
+	if c != want {
+		t.Fatalf("reinforced at the distiller's weight: got %.4f want %.4f (before %.4f)", c, want, before)
+	}
+	var evidence int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='reinforce' AND payload LIKE '%case table%'`).Scan(&evidence)
+	if evidence != 1 {
+		t.Fatalf("the reinforce event must carry the distiller's evidence")
+	}
+}
+
+// TestLLMJudgeWholeProfileAndConfidenceHint: the prompt lists every active
+// row with its category, not just the hinted category, and carries the
+// caller's evidence confidence.
+func TestLLMJudgeWholeProfileAndConfidenceHint(t *testing.T) {
+	db := testDB(t)
+	_, _ = learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers table-driven tests.", Category: "Testing"}, nil)
+	_, _ = learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers tag-triggered releases.", Category: "Workflow"}, nil)
+
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		body = req.Messages[len(req.Messages)-1].Content
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"choices": []map[string]interface{}{{"message": map[string]string{"role": "assistant", "content": verdictJSON("Prefers tests as tables.", "Testing", 0.6, "new", "")}}}})
+	}))
+	t.Cleanup(srv.Close)
+	cfg := llmCfg(t, srv)
+
+	_, _, err := Apply(context.Background(), db, cfg, Input{Statement: "tests as tables", Signal: learn.SignalLLMDistilled, Category: "Testing", Confidence: 0.55}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[Testing] Prefers table-driven tests.", "[Workflow] Prefers tag-triggered releases.", `evidence_confidence="0.55"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("judge prompt lacks %q:\n%s", want, body)
+		}
+	}
+}
+
+// Without a gateway the heuristic judge seeds a distilled row at the
+// distiller's own confidence (capped at 0.9), not at weight×0.5.
+func TestHeuristicDistilledSeedsAtEvidenceConfidence(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+	p, a, err := Apply(context.Background(), db, cfg, Input{Statement: "Prefers golden files.", Signal: learn.SignalLLMDistilled, Category: "Testing", Confidence: 0.65}, "")
+	if err != nil || a.By != "heuristic" || p.Confidence != 0.65 {
+		t.Fatalf("got %+v %+v %v", p, a, err)
+	}
+	p, _, _ = Apply(context.Background(), db, cfg, Input{Statement: "Prefers very sure things.", Signal: learn.SignalLLMDistilled, Category: "Testing", Confidence: 0.99}, "")
+	if p.Confidence != 0.9 {
+		t.Fatalf("cap at 0.9, got %.2f", p.Confidence)
+	}
+}

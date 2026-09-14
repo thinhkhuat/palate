@@ -9,8 +9,11 @@ Palate observes how you edit, correct, and state preferences, scores each one
 with a confidence that moves only on evidence (reinforced when confirmed,
 weakened when contradicted), and pushes the whole current profile into this
 session at `SessionStart` (the same lines as `TASTE.md`) plus intent-scoped
-`UserPromptSubmit` prewarm blocks (`<palate-prewarm scope="...">…</palate-prewarm>`)
-and the `palate_recall` MCP tool.
+`UserPromptSubmit` prewarm blocks (`<palate-prewarm scope="...">…</palate-prewarm>`),
+a `<palate-learned>…</palate-learned>` block at the first prompt after the
+background learner stored something new (apply those lines from then on, the
+SessionStart profile predates them), and the `palate_recall` MCP tool. An
+empty profile is announced as such — learning is automatic; nothing to do.
 
 ## Two tiers of trust
 

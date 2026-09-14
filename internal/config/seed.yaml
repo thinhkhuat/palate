@@ -43,7 +43,8 @@
   # token_env: PALATE_MCP_TOKEN
   # allowlist: ["127.0.0.1", "localhost", "::1", "ip6-localhost"]
 # distill:
-  # mode: auto   # auto | review
+  # mode: auto   # auto | review | off — off never spawns the automatic learner (PALATE_DISTILL_MODE overrides); explicit `palate learn …` still works
+  # skip_dirs: []   # sessions whose cwd is under one of these directories are never learned from, e.g. ["~/ref", "~/in-PROD/CLONED"]
 # render:
   # auto: true   # keep <home>/TASTE.md current after every write (PALATE_RENDER_AUTO=0 to disable)
 # judge:

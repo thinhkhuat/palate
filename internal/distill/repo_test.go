@@ -406,3 +406,71 @@ func TestLearnRepoCursorRoundTrip(t *testing.T) {
 		t.Fatalf("run 2: gateway calls = %d, want still 1 (range form makes no new call)", cg.count())
 	}
 }
+
+func TestRepoSourceClassification(t *testing.T) {
+	local := t.TempDir()
+	cases := map[string]struct {
+		url    string
+		remote bool
+	}{
+		local:                      {"", false},
+		".":                        {"", false},
+		"thinhkhuat/palate":        {"https://github.com/thinhkhuat/palate.git", true},
+		"owner/repo.js":            {"https://github.com/owner/repo.js.git", true},
+		"https://github.com/o/r":   {"https://github.com/o/r", true},
+		"git@github.com:o/r.git":   {"git@github.com:o/r.git", true},
+		"ssh://git@host/o/r":       {"ssh://git@host/o/r", true},
+		"/definitely/not/here/o/r": {"", false},
+		"three/part/name":          {"", false},
+		"":                         {"", false},
+	}
+	for arg, want := range cases {
+		url, remote := RepoSource(arg)
+		if url != want.url || remote != want.remote {
+			t.Fatalf("RepoSource(%q) = (%q, %v), want (%q, %v)", arg, url, remote, want.url, want.remote)
+		}
+	}
+}
+
+// CloneSource on a local bare repo: full history arrives, the temp dir is
+// removed by cleanup, and a bad URL fails with git's own message.
+func TestCloneSourceRoundTrip(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	src := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", src}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-q", "-m", "first")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-q", "-am", "second")
+
+	dir, cleanup, err := CloneSource(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, err := CollectCommits(dir, "", "", 10)
+	if err != nil || len(commits) != 2 {
+		t.Fatalf("clone must carry the full history: %d commits, err %v", len(commits), err)
+	}
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the clone dir")
+	}
+	if _, _, err := CloneSource(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("a missing source must fail")
+	}
+}
