@@ -18,6 +18,10 @@ import (
 	"github.com/thinhkhuat/palate/internal/config"
 )
 
+// requestTimeout is the fallback per-request timeout when a Gateway is built
+// without going through NewGatewayFromEnv (tests, direct construction). The
+// live value comes from cfg.LLMTimeout() so a mature whole-profile
+// consolidation pass is not cut off mid-generation.
 const requestTimeout = 30 * time.Second
 
 // Gateway is a client for one OpenAI-compatible /v1/chat/completions
@@ -27,6 +31,19 @@ type Gateway struct {
 	Model      string
 	APIKey     string
 	HTTPClient *http.Client
+	// Timeout bounds one request. A zero value means requestTimeout. It is
+	// carried on the struct (not only on HTTPClient) because doRequest also
+	// derives a context deadline from it, and that deadline is what actually
+	// fires first on a long generation.
+	Timeout time.Duration
+}
+
+// requestTimeoutOrDefault returns the gateway's per-request timeout.
+func (g *Gateway) requestTimeoutOrDefault() time.Duration {
+	if g.Timeout > 0 {
+		return g.Timeout
+	}
+	return requestTimeout
 }
 
 type chatMessage struct {
@@ -63,7 +80,8 @@ func NewGatewayFromEnv(cfg config.Config) (*Gateway, bool) {
 		Endpoint:   cfg.LLM.Endpoint,
 		Model:      cfg.LLM.Model,
 		APIKey:     cfg.LLM.APIKey,
-		HTTPClient: &http.Client{Timeout: requestTimeout},
+		HTTPClient: &http.Client{Timeout: cfg.LLMTimeout()},
+		Timeout:    cfg.LLMTimeout(),
 	}, true
 }
 
@@ -93,7 +111,7 @@ func warnIfPlaintext(endpoint string) {
 func (g *Gateway) Complete(ctx context.Context, systemPrompt, userPrompt string, retries int, validate func(raw string) error) (string, error) {
 	client := g.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: requestTimeout}
+		client = &http.Client{Timeout: g.requestTimeoutOrDefault()}
 	}
 
 	messages := []chatMessage{
@@ -139,7 +157,7 @@ func correctiveMessage(raw string) string {
 }
 
 func (g *Gateway) doRequest(ctx context.Context, client *http.Client, messages []chatMessage) (string, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	reqCtx, cancel := context.WithTimeout(ctx, g.requestTimeoutOrDefault())
 	defer cancel()
 
 	body, err := json.Marshal(chatRequest{

@@ -73,7 +73,7 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 ### 2.1 Claude Code + Command Code + ZCode — hook-based learning
 
-**What you get:** passive learning (`model_edit`, `user_correction`, `user_diff w=0.6`, `stated_preference`) + `explicit_*` tools + prewarm injection.
+**What you get:** passive learning (`model_edit`, `user_correction`, `stated_preference`) + `explicit_*` tools + prewarm injection. (The old `user_diff` verbatim file-diff path is retired — see `docs/TASTE-format.md`.)
 
 **Claude Code and Codex — install as a plugin (preferred):**
 
@@ -258,7 +258,7 @@ Keep the token out of `config.yaml` — use env only. See `docs/security.md`.
 | `explicit_correction` | 1.0 | you said "fix this" |
 | `explicit_reject` | 0.9 | |
 | `stated_preference` / `explicit_prefer` | 0.8 | |
-| `user_diff` | 0.6* | *hypothesis — content-bearing: PostToolUse snapshots the model-edited file (4KB bound), Stop re-baselines it, and UserPromptSubmit/SessionStart learn the before→after diff via `ExtractCandidates` — only drift the user could have caused counts; promote to 0.9 only if `verify capture` precision ≥0.7 |
+| `user_diff` (retired 2026-09-15) | 0.6* | *was hypothesis content-bearing; retired because it stored verbatim `prefers: <added lines>` dumps instead of preferences. Drifted files are now counted and cleared (`user_diff` drop counter) and the same edits are distilled from the transcript. Any `user_diff` row still in the DB is `OBSERVED`-tiered; clean leftovers with `palate consolidate --retire-verbatim`. |
 | `explicit_accept` | 0.6 | weak |
 | `model_edit` | 0.4 | weakest |
 | `llm_proposal` | — | never deterministic until `palate promote --as` |
@@ -307,6 +307,7 @@ comes back as natural-language preferences at `trust_tier=DISTILLED` — same
 decay/reinforce math, same `preferences` table, same `TASTE.md` render.
 
 ```sh
+export PALATE_LLM_TIMEOUT=120                    # optional — per-request seconds, default 30; raise it for whole-profile consolidate passes
 export PALATE_LLM_ENDPOINT=https://your-gateway/v1/chat/completions
 export PALATE_LLM_MODEL=your-model-id
 export PALATE_LLM_API_KEY=...            # optional — some gateways need none

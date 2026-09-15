@@ -671,13 +671,44 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.WriteFile(dst, b, mode)
 }
 
-// cmdConsolidate runs one whole-profile review pass through the gateway.
+// cmdConsolidate runs one whole-profile review pass through the gateway,
+// plus a no-gateway verbatim cleanup (`--retire-verbatim`) for the retired
+// file-diff path's "prefers: <code>" dumps: matched live verbatim rows retire
+// through the events funnel after a backup, bypassing the 40% review guard
+// (a poisoned store can be mostly garbage — that is exactly when the guard
+// would block the cleanup). --dry-run counts without writing.
 func cmdConsolidate() *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:          "consolidate",
 		Short:        "Review the whole profile with the LLM gateway: merge, rewrite, rescore, retire (review mode → proposals)",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			retireVerbatim, _ := cmd.Flags().GetBool("retire-verbatim")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			if retireVerbatim {
+				cfg := loadConfig()
+				db := openDB(cfg)
+				defer storage.Close()
+				ids, err := consolidate.RetireVerbatimRows(db, true)
+				if err != nil {
+					return err
+				}
+				if dryRun || len(ids) == 0 {
+					fmt.Printf("verbatim scan: %d live verbatim rows (no changes)\n", len(ids))
+					return nil
+				}
+				if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "consolidate-verbatim"); err != nil {
+					return fmt.Errorf("backup before verbatim retire: %w", err)
+				} else if bak != "" {
+					fmt.Fprintln(os.Stderr, "backup:", bak)
+				}
+				retired, err := consolidate.RetireVerbatimRows(db, false)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("retired %d verbatim rows (backup above, audit in events as consolidate_retire)\n", len(retired))
+				return nil
+			}
 			cfg := loadConfig()
 			gw, ok := distill.NewGatewayFromEnv(cfg)
 			if !ok {
@@ -700,6 +731,9 @@ func cmdConsolidate() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().Bool("retire-verbatim", false, "retire live verbatim work-product rows without a gateway (backup first)")
+	c.Flags().Bool("dry-run", false, "with --retire-verbatim: count matches without retiring")
+	return c
 }
 
 func cmdPull() *cobra.Command {
@@ -1284,6 +1318,12 @@ func saveModelEdits(path string, state map[string]modelEdit) error {
 // when non-empty. Returns true when the entry is handled (signal emitted or
 // file gone) and should be removed from state; an unchanged file returns
 // false and stays in state for later checks.
+//
+// 2026-09-15: the verbatim learn path is retired. ExtractCandidates always
+// returns nil now (file diffs are work product, not preferences — 53 verbatim
+// "prefers: <code>" rows had to be bulk-retired from the live store), and the
+// detached LLM distiller already covers the same edit through the transcript.
+// So a drifted file is counted and cleared, never stored.
 func applyUserDiffSignal(db *sql.DB, cfg config.Config, path, recordedHash, snapshot, hashAfterOverride string) bool {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1296,28 +1336,6 @@ func applyUserDiffSignal(db *sql.DB, cfg config.Config, path, recordedHash, snap
 	}
 	if fileHash(b) == baseline {
 		return false
-	}
-	if cfg.LLMConfigured() {
-		// Superseded by the live session distiller (Stop hook, above): the
-		// same transcript this diff came from is about to be distilled into
-		// natural-language statements, so storing the raw added lines here
-		// would double-learn the same edit as both code and prose.
-		storage.BumpDrop(db, "user_diff")
-		return true
-	}
-	for _, sig := range learn.ExtractCandidates(snapshot, string(b)) {
-		sig.File = path
-		scan := safety.Scan(sig.Statement)
-		if scan.Flagged && scan.Reason == "secret" {
-			storage.BumpDrop(db, "user_diff")
-			return true
-		}
-		if _, err := learn.ApplySignal(db, cfg, sig, nil); err != nil {
-			storage.BumpDrop(db, "user_diff")
-			return true
-		}
-		storage.BumpHit(db, "user_diff")
-		return true
 	}
 	storage.BumpDrop(db, "user_diff")
 	return true

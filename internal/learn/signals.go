@@ -103,50 +103,24 @@ func InferCategoryFromStatement(stmt string) string {
 	return inferCategory(stmt)
 }
 
-// ExtractCandidates turns a user edit into at most one user_diff signal. Without a
-// baseline there is nothing to compare, so nothing is learned; the statement
-// carries only the lines the user added, never the file head.
+// ExtractCandidates is retired: file-before/after diffs are work product, not
+// preferences. Storing the added lines verbatim (the old "prefers: <code>"
+// behaviour) poisoned TASTE.md with 53 garbage rows (2026-09-15 audit) that
+// read as code dumps, news paragraphs and JSON blobs at identical c=0.30.
+// The detached LLM distiller already sees the same edit through the session
+// transcript and writes real prose, so the verbatim path only double-learns.
+// Kept as a nil-returning stub so callers and tests name the decision point;
+// TruncateRunes stays exported for the git-signal path.
 func ExtractCandidates(diffBefore, diffAfter string) []Signal {
-	if strings.TrimSpace(diffBefore) == strings.TrimSpace(diffAfter) {
-		return nil
-	}
-	stmt := summarizeDiff(diffBefore, diffAfter)
-	if stmt == "" {
-		return nil
-	}
-	return []Signal{{
-		Type:      SignalUserDiff,
-		Statement: stmt,
-		Category:  inferCategory(diffAfter),
-		Before:    diffBefore,
-		After:     diffAfter,
-	}}
+	return nil
 }
 
 const maxStatementRunes = 160
 
-// summarizeDiff returns "prefers: <added lines>" built from the lines present in
-// after but absent from before, or "" when there is no baseline or nothing was added.
+// summarizeDiff is retired alongside ExtractCandidates (see above): kept only
+// because the name is referenced in history and reviews. It returns "" always.
 func summarizeDiff(before, after string) string {
-	if strings.TrimSpace(before) == "" {
-		return ""
-	}
-	seen := map[string]bool{}
-	for _, l := range strings.Split(before, "\n") {
-		seen[strings.Join(strings.Fields(l), " ")] = true
-	}
-	var added []string
-	for _, l := range strings.Split(after, "\n") {
-		l = strings.Join(strings.Fields(l), " ")
-		if l == "" || seen[l] {
-			continue
-		}
-		added = append(added, l)
-	}
-	if len(added) == 0 {
-		return ""
-	}
-	return TruncateRunes("prefers: "+strings.Join(added, " / "), maxStatementRunes)
+	return ""
 }
 
 // TruncateRunes cuts on rune boundaries and appends an ellipsis when it cut.

@@ -45,7 +45,7 @@ func TestAutoTasteFollowsEveryWrite(t *testing.T) {
 	}
 	storage.Close()
 	got := tasteOnDisk(t)
-	if !strings.Contains(got, "use table-driven tests") || !strings.Contains(got, "(explicit_prefer, STATED)") {
+	if !strings.Contains(got, "use table-driven tests") || !strings.Contains(got, "Confidence: 0.40") {
 		t.Fatalf("TASTE.md not written after prefer:\n%s", got)
 	}
 	if want := freshRender(t); got != want {
@@ -173,7 +173,7 @@ func TestBackupBeforeForgetAndPull(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("pull must add a second backup, got %v", entries)
 	}
-	if got := tasteOnDisk(t); !strings.Contains(got, "use golden files") || !strings.Contains(got, "(imported, IMPORTED)") {
+	if got := tasteOnDisk(t); !strings.Contains(got, "use golden files") || !strings.Contains(got, "Confidence: 0.40") {
 		t.Fatalf("auto TASTE.md must reflect the pull immediately:\n%s", got)
 	}
 	storage.Close()
@@ -207,7 +207,7 @@ func TestAutoTasteAfterLearnSession(t *testing.T) {
 	}
 	storage.Close()
 	got := tasteOnDisk(t)
-	if !strings.Contains(got, "Prefers table-driven tests") || !strings.Contains(got, "(llm_distilled, DISTILLED)") {
+	if !strings.Contains(got, "Prefers table-driven tests") || !strings.Contains(got, "Confidence: 0.90") {
 		t.Fatalf("TASTE.md must reflect the distilled batch:\n%s", got)
 	}
 }

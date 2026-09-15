@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -108,10 +109,31 @@ type MCP struct {
 // LLM holds the chat-completion gateway settings. It carries no yaml tag: it
 // is populated exclusively from PALATE_LLM_* env vars in applyEnv, never
 // from config.yaml.
+//
+// TimeoutSeconds bounds ONE HTTP request to the gateway. It is a knob because
+// the right value depends on the prompt size and the model: a whole-profile
+// consolidation pass over a real (60+ row) store sends a much larger prompt
+// than a per-statement judge call, and its generation is longer, so the old
+// fixed 30 s made `palate consolidate` unreachable on a mature store
+// (observed 2026-09-15: context deadline exceeded, no actions applied).
 type LLM struct {
-	Endpoint string
-	Model    string
-	APIKey   string
+	Endpoint       string
+	Model          string
+	APIKey         string
+	TimeoutSeconds int
+}
+
+// DefaultLLMTimeoutSeconds is the request timeout when none is configured.
+const DefaultLLMTimeoutSeconds = 30
+
+// LLMTimeout returns the configured per-request timeout, falling back to
+// DefaultLLMTimeoutSeconds for a non-positive value.
+func (c Config) LLMTimeout() time.Duration {
+	s := c.LLM.TimeoutSeconds
+	if s <= 0 {
+		s = DefaultLLMTimeoutSeconds
+	}
+	return time.Duration(s) * time.Second
 }
 
 // Distill controls the automatic learner the hooks spawn. Mode is auto
@@ -387,6 +409,11 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("PALATE_LLM_API_KEY"); v != "" {
 		c.LLM.APIKey = v
+	}
+	if v := os.Getenv("PALATE_LLM_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.LLM.TimeoutSeconds = n
+		}
 	}
 	if v := os.Getenv("PALATE_RENDER_AUTO"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {

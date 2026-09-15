@@ -83,8 +83,11 @@ func TestRenderHeaderAndProvenance(t *testing.T) {
 	if !strings.HasPrefix(out, "<!-- auto-maintained by palate after event #1;") {
 		t.Fatalf("header missing or wrong: %q", out)
 	}
-	if !strings.Contains(out, "- Use tabs. Confidence: 0.80 (explicit_prefer, STATED)\n") {
-		t.Fatalf("provenance suffix missing: %q", out)
+	if !strings.Contains(out, "- Use tabs. Confidence: 0.80\n") {
+		t.Fatalf("command-code bullet shape missing: %q", out)
+	}
+	if strings.Contains(out, "(explicit_prefer, STATED)") {
+		t.Fatalf("internal metadata suffix must not leak into the render: %q", out)
 	}
 	if diags := lintString(t, out); len(diags) != 0 {
 		t.Fatalf("Lint must accept the new format: %v", diags)

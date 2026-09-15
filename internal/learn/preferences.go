@@ -159,6 +159,12 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 		trustTier = "IMPORTED"
 	} else if sig.Type == SignalLLMDistilled {
 		trustTier = "DISTILLED"
+	} else if sig.Type == SignalUserDiff {
+		// A file diff is an observed hypothesis about taste, never a stated
+		// requirement: the user edited a file, they did not say "I prefer".
+		// Tiering it STATED (pre-2026-09-15 behaviour) made 53 verbatim code
+		// dumps indistinguishable from explicit requirements.
+		trustTier = "OBSERVED"
 	}
 	_, err := conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, valid_from, created_at, last_reinforced_at, reinforcement_count, trust_tier, veracity)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,

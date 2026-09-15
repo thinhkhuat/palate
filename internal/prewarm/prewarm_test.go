@@ -150,13 +150,13 @@ func TestPrewarmMarksDistilled(t *testing.T) {
 	if !strings.Contains(block.Content, "Prefers table-driven tests.") {
 		t.Fatalf("prewarm content missing the distilled statement: %q", block.Content)
 	}
-	distilledLine := lineContaining(block.Content, "Prefers table-driven tests.")
-	if !strings.Contains(distilledLine, ", DISTILLED)") {
-		t.Fatalf("distilled row missing tier: %q", distilledLine)
+	if !strings.Contains(block.Content, "Prefers table-driven tests.") {
+		t.Fatalf("prewarm content missing the distilled statement: %q", block.Content)
 	}
-	statedLine := lineContaining(block.Content, "use early returns over nested ifs")
-	if strings.Contains(statedLine, "DISTILLED") {
-		t.Fatalf("STATED row must not carry the distilled marker: %q", statedLine)
+	for _, l := range strings.Split(block.Content, "\n") {
+		if strings.HasPrefix(l, "- ") && strings.Contains(l, "(") && strings.Contains(l, "Confidence:") {
+			t.Fatalf("internal metadata suffix leaked into prewarm: %q", l)
+		}
 	}
 }
 

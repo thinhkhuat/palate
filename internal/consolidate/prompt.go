@@ -18,8 +18,14 @@ Return the smallest set of actions that makes the profile cleaner and truer:
 - "rescore": the confidence does not match the evidence (many reinforcements
   but low confidence, or a single hedged remark scored high) →
   {"type":"rescore","id":"…","confidence":0.0,"reason":"…"}
-- "retire": a preference is a one-off task detail, obsolete, or contradicted
-  by stronger later rows → {"type":"retire","id":"…","reason":"…"}
+- "retire": a preference is a one-off task detail, obsolete, contradicted by
+  stronger later rows, OR a verbatim work-product dump — a prefers-prefixed
+  row quoting code, regex, tables, JSON, vendored script bodies or pasted
+  document paragraphs (the retired file-diff path wrote these; they read as
+  prefers-code rather than a durable behaviour like Prefers table-driven
+  tests). Verbatim dumps are never taste: retire them even when there are
+  many, and never rewrite one into a cleaner code quote →
+  {"type":"retire","id":"…","reason":"…"}
 
 Rules: never invent preferences; never change meaning; keep each statement in
 the language it is written in (a Vietnamese line stays Vietnamese — never

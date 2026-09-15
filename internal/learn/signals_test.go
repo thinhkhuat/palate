@@ -6,6 +6,10 @@ import (
 	"unicode/utf8"
 )
 
+// The verbatim "prefers: <added lines>" diff path is retired (2026-09-15):
+// these tests pin the OLD contract only as documentation of what was removed.
+// ExtractCandidates must now return nil for every shape below; the live
+// retirement assertions live in verbatim_retire_test.go.
 func TestSummarizeDiffEmptyBefore(t *testing.T) {
 	if got := ExtractCandidates("", "package main\nfunc main() {}\n"); got != nil {
 		t.Fatalf("expected nil candidates without a baseline, got %v", got)
@@ -15,16 +19,8 @@ func TestSummarizeDiffEmptyBefore(t *testing.T) {
 func TestSummarizeDiffOnlyChangedLine(t *testing.T) {
 	before := "package main\n\nfunc main() {\n\tfoo()\n}\n"
 	after := "package main\n\nfunc main() {\n\tbar()\n}\n"
-	got := ExtractCandidates(before, after)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
-	}
-	stmt := got[0].Statement
-	if strings.Contains(stmt, "package main") {
-		t.Fatalf("statement must not carry unchanged lines: %q", stmt)
-	}
-	if !strings.Contains(stmt, "bar()") {
-		t.Fatalf("statement must carry the added line: %q", stmt)
+	if got := ExtractCandidates(before, after); got != nil {
+		t.Fatalf("retired path must yield nil, got %v", got)
 	}
 }
 
@@ -36,19 +32,12 @@ func TestSummarizeDiffNoAddedLines(t *testing.T) {
 }
 
 func TestSummarizeDiffRuneSafeTruncation(t *testing.T) {
+	// Retired: the rune-safe truncation contract moved to TruncateRunes itself
+	// (see TestRetiredTruncationStaysRuneSafe in verbatim_retire_test.go).
 	long := strings.Repeat("café ", 60)
-	got := ExtractCandidates("x", long)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
+	if got := ExtractCandidates("x", long); got != nil {
+		t.Fatalf("retired path must yield nil, got %v", got)
 	}
-	stmt := got[0].Statement
-	if !utf8.ValidString(stmt) {
-		t.Fatalf("truncation split a rune: %q", stmt)
-	}
-	if n := utf8.RuneCountInString(stmt); n > 161 {
-		t.Fatalf("statement exceeds 160 runes + ellipsis: %d runes", n)
-	}
-	if !strings.HasSuffix(stmt, "…") {
-		t.Fatalf("truncated statement must end with an ellipsis: %q", stmt)
-	}
+	_ = utf8.ValidString
+	_ = strings.HasSuffix
 }

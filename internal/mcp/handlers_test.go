@@ -150,7 +150,7 @@ func TestAutoTasteAfterMCPPrefer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TASTE.md not written after an MCP write tool: %v", err)
 	}
-	if !strings.Contains(string(b), "use table-driven tests") || !strings.Contains(string(b), "(explicit_prefer, STATED)") {
+	if !strings.Contains(string(b), "use table-driven tests") || !strings.Contains(string(b), "Confidence: 0.40") {
 		t.Fatalf("unexpected TASTE.md content:\n%s", b)
 	}
 }

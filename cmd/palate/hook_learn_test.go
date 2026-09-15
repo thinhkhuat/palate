@@ -80,8 +80,10 @@ func TestSessionStartSpawnsDetached(t *testing.T) {
 }
 
 // TestHooksDoNotSpawnWhenUnconfigured is the regression guard: with no LLM
-// configured, neither hook spawns, and the user_diff state walk still learns
-// a hand-edit — at UserPromptSubmit, never at Stop.
+// configured, neither hook spawns. The verbatim user_diff learn path is
+// retired (2026-09-15): a hand-edit is counted and cleared, never stored —
+// the same edit is covered by the LLM distiller via the transcript. Stop
+// still learns nothing (the drift is the assistant's own) and re-baselines.
 func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 	setupTempProject(t)
 	calls := installSpawnSpy(t)
@@ -116,8 +118,16 @@ func TestHooksDoNotSpawnWhenUnconfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	if !strings.Contains(out, "prefers:") {
-		t.Fatalf("UserPromptSubmit must learn the user_diff left since Stop, got: %s", out)
+	if strings.Contains(out, "prefers:") {
+		t.Fatalf("retired verbatim path must never store a prefers-code row, got: %s", out)
+	}
+	var drops int
+	cfg := loadConfig()
+	db := openDB(cfg)
+	_ = db.QueryRow(`SELECT drops FROM capture_counters WHERE signal_type='user_diff'`).Scan(&drops)
+	storage.Close()
+	if drops < 1 {
+		t.Fatalf("the drifted hand-edit must be counted as a user_diff drop, drops=%d", drops)
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("expected no spawn calls after the regression check, got %+v", *calls)
@@ -163,10 +173,10 @@ func TestUserPromptRegexOffWhenLLMConfigured(t *testing.T) {
 	}
 }
 
-// TestApplyUserDiffSignalOffWhenLLMConfigured: with an LLM configured, a
-// changed file with a real diff produces zero preference rows and one
-// BumpDrop("user_diff"); with it unset, today's behavior (a preference row
-// appears) is unchanged.
+// TestApplyUserDiffSignalRetired: the verbatim learn path is retired — a changed
+// file with a real diff produces zero preference rows and one
+// BumpDrop("user_diff") whether or not an LLM is configured. The same edit is
+// covered by the detached distiller via the transcript.
 func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 	setupTempProject(t)
 	t.Setenv("PALATE_LLM_ENDPOINT", "http://127.0.0.1:1")
@@ -194,8 +204,10 @@ func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 	}
 	storage.Close()
 
-	// Regression: with no LLM configured, the same shaped diff still stores
-	// a preference exactly as it did before this phase.
+	// Regression: with no LLM configured, the same shaped diff is likewise
+	// counted and cleared — never stored. (Pre-2026-09-15 behaviour stored
+	// one "prefers:" row here; that path poisoned TASTE.md with 53 verbatim
+	// dumps and is retired.)
 	setupTempProject(t)
 	unconfiguredCfg := loadConfig()
 	db2 := openDB(unconfiguredCfg)
@@ -209,8 +221,8 @@ func TestApplyUserDiffSignalOffWhenLLMConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list preferences: %v", err)
 	}
-	if len(prefs2) != 1 {
-		t.Fatalf("expected exactly 1 preference with LLM unconfigured, got %d: %+v", len(prefs2), prefs2)
+	if len(prefs2) != 0 {
+		t.Fatalf("retired path must store zero preferences, got %d: %+v", len(prefs2), prefs2)
 	}
 }
 

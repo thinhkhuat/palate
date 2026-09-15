@@ -139,12 +139,12 @@ func seedNoticeCursor(db *sql.DB, cfg config.Config) {
 func learnedLines(db *sql.DB, cfg config.Config, ids []string, since string) string {
 	var lines []string
 	for _, id := range ids {
-		var cat, stmt, source, tier string
+		var cat, stmt string
 		var c float64
-		if db.QueryRow(`SELECT category, statement, confidence, source, trust_tier FROM preferences WHERE id=? AND valid_until IS NULL`, id).Scan(&cat, &stmt, &c, &source, &tier) != nil {
+		if db.QueryRow(`SELECT category, statement, confidence FROM preferences WHERE id=? AND valid_until IS NULL`, id).Scan(&cat, &stmt, &c) != nil {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- [%s] %s Confidence: %.2f (%s, %s)", cat, strings.TrimSuffix(stmt, ".")+".", c, source, tier))
+		lines = append(lines, fmt.Sprintf("- [%s] %s Confidence: %.2f", cat, strings.TrimSuffix(stmt, ".")+".", c))
 	}
 	if len(lines) == 0 {
 		return ""

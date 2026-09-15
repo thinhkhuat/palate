@@ -36,7 +36,7 @@ func TestPreferJudgedByGateway(t *testing.T) {
 		t.Fatalf("prefer: err=%v out=%q", err, out)
 	}
 	storage.Close()
-	if got := tasteOnDisk(t); !strings.Contains(got, "- Prefers table-driven tests. Confidence: 0.80 (explicit_prefer, STATED)") {
+	if got := tasteOnDisk(t); !strings.Contains(got, "- Prefers table-driven tests. Confidence: 0.80") {
 		t.Fatalf("TASTE.md must carry the judged row:\n%s", got)
 	}
 	storage.Close()

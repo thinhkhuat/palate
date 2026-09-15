@@ -3,6 +3,7 @@ package prewarm
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/thinhkhuat/palate/internal/config"
@@ -68,31 +69,102 @@ func SessionPrewarm(conn *sql.DB, cfg config.Config) (Block, error) {
 	return Block{Content: content, Tokens: estimateTokens(content), Scope: "session"}, nil
 }
 
-// fitLines keeps leading lines while they fit the budget. A "## Category"
-// heading with no bullets left under it is dropped too. dropped counts only
-// preference bullets, since that is the number the reader cares about.
+// fitLines keeps the highest-confidence bullets while they fit the budget.
+// render.Body already sorts confidence-desc within each category; here each
+// bullet's confidence is parsed from its own "Confidence: 0.xx" tail and the
+// candidate pool is ranked globally, so over budget the weakest rows drop
+// first no matter which category they sit in. Category headings travel with
+// their first kept bullet; a heading with no bullets left under it is dropped.
+// dropped counts only preference bullets, since that is the number the reader
+// cares about.
 func fitLines(lines []string, budget int) (kept []string, dropped int) {
+	type bullet struct {
+		idx  int
+		conf float64
+		cost int
+		head int
+	}
+	var bullets []bullet
+	for i, l := range lines {
+		if !strings.HasPrefix(l, "- ") {
+			continue
+		}
+		bullets = append(bullets, bullet{idx: i, conf: bulletConfidence(l), cost: estimateTokens(l) + 1, head: headingFor(lines, i)})
+	}
+	sort.SliceStable(bullets, func(a, b int) bool { return bullets[a].conf > bullets[b].conf })
+	headCost := map[int]int{}
+	for _, bl := range bullets {
+		if bl.head >= 0 {
+			headCost[bl.head] = estimateTokens(lines[bl.head]) + 1
+		}
+	}
+	keepIdx := map[int]bool{}
+	headKept := map[int]bool{}
 	used := 0
-	i := 0
-	for ; i < len(lines); i++ {
-		t := estimateTokens(lines[i]) + 1
-		if used+t > budget {
-			break
+	for _, bl := range bullets {
+		cost := bl.cost
+		if bl.head >= 0 && !headKept[bl.head] {
+			cost += headCost[bl.head]
 		}
-		used += t
-		kept = append(kept, lines[i])
+		if used+cost > budget {
+			continue
+		}
+		used += cost
+		keepIdx[bl.idx] = true
+		if bl.head >= 0 {
+			keepIdx[bl.head] = true
+			headKept[bl.head] = true
+		}
 	}
-	for _, l := range lines[i:] {
+	for i, l := range lines {
 		if strings.HasPrefix(l, "- ") {
-			dropped++
+			if keepIdx[i] {
+				kept = append(kept, l)
+			} else {
+				dropped++
+			}
+			continue
 		}
+		if strings.HasPrefix(l, "## ") {
+			if keepIdx[i] {
+				kept = append(kept, l)
+			}
+			continue
+		}
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		kept = append(kept, l)
 	}
-	if dropped > 0 {
-		for len(kept) > 0 && (strings.HasPrefix(kept[len(kept)-1], "## ") || strings.TrimSpace(kept[len(kept)-1]) == "") {
-			kept = kept[:len(kept)-1]
-		}
+	for len(kept) > 0 && (strings.HasPrefix(kept[len(kept)-1], "## ") || strings.TrimSpace(kept[len(kept)-1]) == "") {
+		kept = kept[:len(kept)-1]
 	}
 	return kept, dropped
+}
+
+// bulletConfidence parses the "Confidence: 0.xx" tail a bullet carries.
+// Unparseable lines sort as the weakest so they drop first, never last.
+func bulletConfidence(line string) float64 {
+	idx := strings.LastIndex(line, "Confidence:")
+	if idx < 0 {
+		return -1
+	}
+	var c float64
+	if _, err := fmt.Sscanf(line[idx:], "Confidence: %f", &c); err != nil {
+		return -1
+	}
+	return c
+}
+
+// headingFor returns the index of the "## Category" heading owning the bullet
+// at idx (the nearest heading above it), or -1 when there is none.
+func headingFor(lines []string, idx int) int {
+	for i := idx - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "## ") {
+			return i
+		}
+	}
+	return -1
 }
 
 var lastGoalHash string
@@ -133,7 +205,7 @@ func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Bl
 	for _, kw := range keywords {
 		like := "%" + kw + "%"
 		rows, err := conn.Query(`
-			SELECT category, statement, confidence, source, trust_tier FROM preferences
+			SELECT category, statement, confidence FROM preferences
 			WHERE valid_until IS NULL AND (statement LIKE ? OR category LIKE ?)
 			  AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)
 			ORDER BY confidence DESC LIMIT 5`, like, like)
@@ -142,14 +214,14 @@ func goalPrewarmUncached(conn *sql.DB, cfg config.Config, userPrompt string) (Bl
 			continue
 		}
 		for rows.Next() {
-			var cat, stmt, source, tier string
+			var cat, stmt string
 			var conf float64
-			if err := rows.Scan(&cat, &stmt, &conf, &source, &tier); err != nil {
+			if err := rows.Scan(&cat, &stmt, &conf); err != nil {
 				continue
 			}
 			// Same bullet shape as the session block and TASTE.md, with the
 			// category inline since this block has no headings.
-			lines = append(lines, fmt.Sprintf("- [%s] %s. Confidence: %.2f (%s, %s)", cat, strings.TrimSuffix(stmt, "."), conf, source, tier))
+			lines = append(lines, fmt.Sprintf("- [%s] %s. Confidence: %.2f", cat, strings.TrimSuffix(stmt, "."), conf))
 		}
 		rows.Close()
 		if len(lines) > 0 {
