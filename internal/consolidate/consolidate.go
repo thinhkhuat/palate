@@ -108,7 +108,8 @@ func Run(ctx context.Context, conn *sql.DB, cfg config.Config, gw *distill.Gatew
 		actions = env.Actions
 		return nil
 	}
-	if _, err := gw.Complete(ctx, SystemPrompt, BuildUserPrompt(rows), passRetries, validate); err != nil {
+	rulebookBlock, _ := learn.LoadRulebook(cfg)
+	if _, err := gw.Complete(ctx, SystemPrompt, BuildUserPrompt(rows, rulebookBlock), passRetries, validate); err != nil {
 		return rep, err
 	}
 
@@ -295,14 +296,25 @@ func stripFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// BuildUserPrompt lists the profile, censored, one row per line.
-func BuildUserPrompt(rows []learn.Preference) string {
+// BuildUserPrompt lists the profile, censored, one row per line. The
+// curated rulebook, when configured, rides along so EXISTING rows that
+// merely restate one of its rules can be retired even though they were
+// written before the rulebook feature existed.
+func BuildUserPrompt(rows []learn.Preference, rulebookBlock string) string {
 	var b strings.Builder
 	b.WriteString("<profile>\n")
 	for _, p := range rows {
-		fmt.Fprintf(&b, "- id=%s | [%s] %s | confidence %.2f | reinforced %d× | created %s | last %s | %s/%s\n",
-			p.ID, p.Category, safety.Censor(p.Statement), p.Confidence, p.ReinforcementCount, p.CreatedAt, p.LastReinforcedAt, p.Source, p.TrustTier)
+		marker := ""
+		if learn.HasRulebookOverlap(p.Provenance) {
+			marker = " | rulebook"
+		}
+		fmt.Fprintf(&b, "- id=%s | [%s] %s | confidence %.2f | reinforced %d× | created %s | last %s | %s/%s%s\n",
+			p.ID, p.Category, safety.Censor(p.Statement), p.Confidence, p.ReinforcementCount, p.CreatedAt, p.LastReinforcedAt, p.Source, p.TrustTier, marker)
 	}
 	b.WriteString("</profile>")
+	if rulebookBlock != "" {
+		b.WriteString("\n\n## CURATED RULEBOOK (authoritative, always loaded — retire rows that merely restate one of its rules)\n")
+		b.WriteString(rulebookBlock)
+	}
 	return b.String()
 }

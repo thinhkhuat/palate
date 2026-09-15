@@ -158,6 +158,22 @@ func cmdInit() *cobra.Command {
 	}
 }
 
+// staleGatewayWarning compares the live PALATE_LLM_* env with the model the
+// last successful gateway call actually used (state/last_gateway.json). A
+// mismatch means running hooks/servers hold an older env than a fresh shell
+// would get — doctor's only honest move is to say so; it cannot know what a
+// future shell will export.
+func staleGatewayWarning(cfg config.Config) string {
+	if !cfg.LLMConfigured() {
+		return ""
+	}
+	model, at, ok := distill.LastGatewayStamp(cfg)
+	if !ok || model == cfg.LLM.Model {
+		return ""
+	}
+	return fmt.Sprintf("model changed since the last gateway call (env %s, last used %s at %s) — running hooks/servers still carry the old env; restart the harness to re-source it", cfg.LLM.Model, model, at)
+}
+
 func cmdDoctor() *cobra.Command {
 	return &cobra.Command{
 		Use:          "doctor",
@@ -173,6 +189,9 @@ func cmdDoctor() *cobra.Command {
 			fmt.Printf("db: %s\n", cfg.DBPath)
 			fmt.Printf("taste: %s (auto-render %s)\n", cfg.TastePath(), map[bool]string{true: "on", false: "off"}[cfg.Render.Auto])
 			fmt.Printf("judge: %s\n", judge.Mode(cfg))
+			if warn := staleGatewayWarning(cfg); warn != "" {
+				fmt.Printf("gateway: %s\n", warn)
+			}
 			fmt.Printf("learning: %s\n", cfg.LearningMode())
 			if bak := storage.NewestBackup(cfg.BackupDir()); bak != "" {
 				fmt.Printf("backup: newest %s\n", bak)

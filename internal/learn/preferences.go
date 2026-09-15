@@ -491,6 +491,10 @@ type Assessment struct {
 	TargetID   string
 	Reason     string
 	By         string
+	// RulebookOverlap marks the statement as a restatement of a rule from
+	// the user's curated rulebook (config key `rulebook:`). Set by the LLM
+	// verdict, the distiller's flag, or both; stored in provenance.
+	RulebookOverlap bool
 }
 
 // ActiveInCategory lists the live rows a judge compares a candidate against.
@@ -573,6 +577,15 @@ func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Pr
 			stmt = a.Statement
 			_ = storage.AppendEvent(conn, "refine", withEvidence(fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"by":%q}`, target.ID, target.Statement, stmt, a.By), sig.Evidence))
 		}
+		// A rulebook restatement tags the target too: reinforcing an
+		// existing row with rulebook evidence means that row restates the
+		// rulebook, whatever its original provenance said.
+		if a.RulebookOverlap && !HasRulebookOverlap(target.Provenance) {
+			if _, err := conn.Exec(`UPDATE preferences SET provenance=json_insert(provenance, '$[#]', ?) WHERE id=?`, RulebookOverlap, target.ID); err != nil {
+				return nil, err
+			}
+			target.Provenance = appendProvenance(target.Provenance, RulebookOverlap)
+		}
 		if _, err := conn.Exec(`UPDATE preferences SET statement=?, confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1, provenance=? WHERE id=?`,
 			stmt, c, now, appendProvenance(target.Provenance, string(sig.Type)+"/judged:"+a.By), target.ID); err != nil {
 			return nil, err
@@ -610,7 +623,11 @@ func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Pr
 func insertJudgedRow(conn *sql.DB, cfg config.Config, sig Signal, a Assessment, now string) (*Preference, error) {
 	conf := ClampConfidence(a.Confidence, cfg.CFloor)
 	id := newID()
-	prov, _ := json.Marshal([]string{string(sig.Type), "judged:" + a.By})
+	provTags := []string{string(sig.Type), "judged:" + a.By}
+	if a.RulebookOverlap {
+		provTags = append(provTags, RulebookOverlap)
+	}
+	prov, _ := json.Marshal(provTags)
 	trustTier := "STATED"
 	if sig.Type == SignalImported {
 		trustTier = "IMPORTED"

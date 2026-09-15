@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -36,6 +37,11 @@ type Gateway struct {
 	// derives a context deadline from it, and that deadline is what actually
 	// fires first on a long generation.
 	Timeout time.Duration
+
+	// statePath, when set, receives a last_gateway.json stamp after every
+	// successful call (doctor's staleness surface). Set only by
+	// NewGatewayFromEnv; directly-built gateways (tests) don't stamp.
+	statePath string
 }
 
 // requestTimeoutOrDefault returns the gateway's per-request timeout.
@@ -82,6 +88,7 @@ func NewGatewayFromEnv(cfg config.Config) (*Gateway, bool) {
 		APIKey:     cfg.LLM.APIKey,
 		HTTPClient: &http.Client{Timeout: cfg.LLMTimeout()},
 		Timeout:    cfg.LLMTimeout(),
+		statePath:  cfg.StatePath("last_gateway.json"),
 	}, true
 }
 
@@ -201,7 +208,51 @@ func (g *Gateway) doRequest(ctx context.Context, client *http.Client, messages [
 		return "", fmt.Errorf("gateway: empty choices in response")
 	}
 
+	g.stampSuccess()
 	return parsed.Choices[0].Message.Content, nil
+}
+
+// gatewayStamp is what state/last_gateway.json records after every
+// successful gateway response: the model and endpoint the call actually
+// used. Doctor compares it with the current env so a stale process env
+// (harness started before harness-env.sh changed) becomes visible instead
+// of silently deciding what the judge sees.
+type gatewayStamp struct {
+	Model        string `json:"model"`
+	EndpointHost string `json:"endpoint_host"`
+	At           string `json:"at"`
+}
+
+// stampSuccess records the last successful gateway call. Best-effort: a
+// stamp write must never fail a completed call.
+func (g *Gateway) stampSuccess() {
+	if g.statePath == "" {
+		return
+	}
+	host := ""
+	if u, err := url.Parse(g.Endpoint); err == nil {
+		host = u.Host
+	}
+	b, err := json.Marshal(gatewayStamp{Model: g.Model, EndpointHost: host, At: time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(g.statePath), 0700)
+	_ = os.WriteFile(g.statePath, b, 0600)
+}
+
+// LastGatewayStamp returns the model and timestamp of the last successful
+// gateway call, ok=false when there is none (or the stamp is unreadable).
+func LastGatewayStamp(cfg config.Config) (model, at string, ok bool) {
+	b, err := os.ReadFile(cfg.StatePath("last_gateway.json"))
+	if err != nil {
+		return "", "", false
+	}
+	var s gatewayStamp
+	if json.Unmarshal(b, &s) != nil || s.Model == "" {
+		return "", "", false
+	}
+	return s.Model, s.At, true
 }
 
 func truncate(s string, n int) string {

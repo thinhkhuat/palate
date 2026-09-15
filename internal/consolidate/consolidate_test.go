@@ -46,6 +46,9 @@ func gatewayReplying(t *testing.T, actions []Action) *distill.Gateway {
 	t.Setenv("PALATE_LLM_ENDPOINT", srv.URL+"/v1/chat/completions")
 	t.Setenv("PALATE_LLM_MODEL", "fake")
 	cfg := config.Default()
+	// Temp home: the gateway stamps state/last_gateway.json after every
+	// successful call — never let that land in the CWD or the real home.
+	cfg.Home = t.TempDir()
 	cfg.LLM.Endpoint, cfg.LLM.Model = srv.URL+"/v1/chat/completions", "fake"
 	gw, ok := distill.NewGatewayFromEnv(cfg)
 	if !ok {

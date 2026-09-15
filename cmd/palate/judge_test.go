@@ -41,7 +41,7 @@ func TestPreferJudgedByGateway(t *testing.T) {
 	}
 	storage.Close()
 	out, _ = runCLI(t, "doctor")
-	if !strings.Contains(out, "judge: llm (fake)") {
+	if !strings.Contains(out, "judge: llm (fake via PALATE_LLM_MODEL)") {
 		t.Fatalf("doctor must name the llm judge:\n%s", out)
 	}
 	storage.Close()

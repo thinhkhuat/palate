@@ -23,7 +23,7 @@ func TestFormatExistingPreferences(t *testing.T) {
 }
 
 func TestBuildUserPromptSections(t *testing.T) {
-	out := BuildUserPrompt("- [Testing] Prefers table-driven tests. (confidence 0.90)", "old evidence", "new evidence")
+	out := BuildUserPrompt("- [Testing] Prefers table-driven tests. (confidence 0.90)", "old evidence", "new evidence", "")
 
 	sections := []string{
 		"## CURRENT PREFERENCES",
@@ -55,7 +55,7 @@ func TestBuildUserPromptSections(t *testing.T) {
 }
 
 func TestBuildUserPromptEmptyExisting(t *testing.T) {
-	out := BuildUserPrompt("", "prev", "new")
+	out := BuildUserPrompt("", "prev", "new", "")
 	if !strings.Contains(out, "## CURRENT PREFERENCES\n(none yet)") {
 		t.Fatalf("expected placeholder for empty CURRENT PREFERENCES: %s", out)
 	}

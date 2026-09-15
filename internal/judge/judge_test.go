@@ -56,6 +56,11 @@ func llmCfg(t *testing.T, srv *httptest.Server) config.Config {
 	t.Setenv("PALATE_LLM_ENDPOINT", srv.URL+"/v1/chat/completions")
 	t.Setenv("PALATE_LLM_MODEL", "fake")
 	cfg := config.Default()
+	// Anchor the home to a temp dir: the gateway now stamps
+	// state/last_gateway.json after every successful call, and a
+	// CWD-resolved default home would litter the repo (and, run from the
+	// operator's shell, the real palate home) with test stamps.
+	cfg.Home = t.TempDir()
 	cfg.LLM.Endpoint, cfg.LLM.Model = srv.URL+"/v1/chat/completions", "fake"
 	return cfg
 }
@@ -72,7 +77,7 @@ func TestForPicksImplementation(t *testing.T) {
 		t.Fatalf("no gateway must give the heuristic judge: %s / %s", For(cfg).Name(), Mode(cfg))
 	}
 	cfg.LLM.Endpoint, cfg.LLM.Model = "http://127.0.0.1:9/v1", "m"
-	if For(cfg).Name() != "llm" || Mode(cfg) != "llm (m)" {
+	if For(cfg).Name() != "llm" || Mode(cfg) != "llm (m via PALATE_LLM_MODEL)" {
 		t.Fatalf("gateway configured must give the llm judge: %s / %s", For(cfg).Name(), Mode(cfg))
 	}
 	cfg.Judge.Enabled = false

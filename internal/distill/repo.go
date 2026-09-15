@@ -363,7 +363,8 @@ func LearnRepoKeyed(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Ga
 		return len(signals), Summary{}, fmt.Errorf("list preferences: %w", err)
 	}
 
-	result, distillErr := Distill(ctx, conn, gw, prefs, "", FormatGitEvidence(signals))
+	rulebookBlock, _ := learn.LoadRulebook(cfg)
+	result, distillErr := Distill(ctx, conn, gw, prefs, "", FormatGitEvidence(signals), rulebookBlock)
 	if distillErr == nil {
 		applied, dropped := ApplyDistilled(conn, cfg, result.Statements)
 		if err := SetCursor(conn, "git", cursorKey, newestSHA); err != nil {

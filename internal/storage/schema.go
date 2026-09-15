@@ -163,30 +163,18 @@ func initSchema(conn *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 			resolved_at TEXT DEFAULT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS triples (
-			id TEXT PRIMARY KEY,
-			subject TEXT NOT NULL,
-			predicate TEXT NOT NULL,
-			object TEXT NOT NULL,
-			valid_from TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-			valid_until TEXT DEFAULT NULL,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-		)`,
-		`CREATE TABLE IF NOT EXISTS facts (
-			id TEXT PRIMARY KEY,
-			content TEXT NOT NULL,
-			category TEXT DEFAULT '',
-			confidence REAL DEFAULT 0.5,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-		)`,
-		`CREATE TABLE IF NOT EXISTS graph_edges (
-			id TEXT PRIMARY KEY,
-			source_id TEXT NOT NULL,
-			target_id TEXT NOT NULL,
-			relation TEXT NOT NULL DEFAULT 'related',
-			weight REAL DEFAULT 0.5,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-		)`,
+		// Dead scaffold from the mnemosyne-shaped early schema: no code
+		// path ever read or wrote facts/triples/graph_edges (verified
+		// 2026-09-16 — zero Go callers outside this DDL, zero rows in the
+		// live store). Dropped idempotently on open; decisions.md records
+		// the verdict. Load-bearing mnemosyne-shaped tables stay:
+		// working_memory / episodic_memory / scratchpad (Remember, Forget,
+		// Sleep, Recall), memory_embeddings (vec seam), plus the events,
+		// preferences, conflicts, proposals and FTS machinery.
+		`DROP TABLE IF EXISTS facts`,
+		`DROP INDEX IF EXISTS idx_triples_spo`,
+		`DROP TABLE IF EXISTS triples`,
+		`DROP TABLE IF EXISTS graph_edges`,
 		`CREATE TABLE IF NOT EXISTS proposals (
 			id TEXT PRIMARY KEY,
 			content TEXT NOT NULL,
@@ -266,7 +254,6 @@ func initSchema(conn *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_pref_confidence ON preferences(confidence)`,
 		`CREATE INDEX IF NOT EXISTS idx_pref_valid ON preferences(valid_until)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)`,
-		`CREATE INDEX IF NOT EXISTS idx_triples_spo ON triples(subject, predicate, object)`,
 	}
 	for _, idx := range indexes {
 		if _, err := conn.Exec(idx); err != nil {

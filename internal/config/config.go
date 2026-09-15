@@ -38,7 +38,12 @@ type Config struct {
 	Hybrid            Hybrid       `yaml:"hybrid"`
 	TaxonomyThreshold int          `yaml:"taxonomy_threshold"`
 	MCP               MCP          `yaml:"mcp"`
-	LLM               LLM
+	// Rulebook is the path to the user's curated rulebook (e.g.
+	// ~/.claude/CLAUDE.md). Learned rows that merely restate one of its rules
+	// are tagged rulebook_overlap in provenance, hidden from TASTE.md and
+	// retired by consolidation. Empty = the feature is off.
+	Rulebook string `yaml:"rulebook"`
+	LLM      LLM
 	Distill           Distill     `yaml:"distill"`
 	Render            Render      `yaml:"render"`
 	Judge             Judge       `yaml:"judge"`
@@ -358,6 +363,9 @@ func Resolve(explicit string) (Config, error) {
 		cfg.DBPath = filepath.Join(cfg.Home, "palate.db")
 	}
 	applyEnv(&cfg)
+	// A leading ~/ resolves against the user's home so the rulebook path in
+	// config.yaml reads the way every shell expands it.
+	cfg.Rulebook = expandHomePath(cfg.Rulebook)
 	// An explicit relative db_path (yaml or PALATE_DB_PATH) is anchored to the
 	// cwd once, here, for the same reason the home is: hooks and the detached
 	// distiller must address the same file whatever their cwd.
@@ -365,6 +373,21 @@ func Resolve(explicit string) (Config, error) {
 		cfg.DBPath = absHome(cfg.DBPath)
 	}
 	return cfg, nil
+}
+
+// expandHomePath resolves a leading ~/ against the user's home directory so
+// a rulebook path in config.yaml reads the way every shell expands it. A
+// path without the prefix passes through unchanged; an unresolvable home
+// returns the path as-is (the loader will then fail-open).
+func expandHomePath(p string) string {
+	if !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[2:])
 }
 
 // loadFile reads one YAML file over Default() without touching env or the

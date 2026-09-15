@@ -50,6 +50,9 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 	}
 
 	source, key := t.Harness, t.Path
+	// The curated rulebook rides along on every batch so restatements get
+	// the rulebook flag; fail-open when unset or unreadable.
+	rulebookBlock, _ := learn.LoadRulebook(cfg)
 	cursorIndex := -1
 	if pos, _, ok := GetCursor(conn, source, key); ok {
 		if parsed, err := strconv.Atoi(pos); err == nil {
@@ -80,7 +83,7 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 			return sum, fmt.Errorf("list preferences: %w", err)
 		}
 
-		result, distillErr := Distill(ctx, conn, gw, prefs, FormatEvidence(t.Harness, prev), FormatEvidence(t.Harness, batch))
+		result, distillErr := Distill(ctx, conn, gw, prefs, FormatEvidence(t.Harness, prev), FormatEvidence(t.Harness, batch), rulebookBlock)
 		sum.Batches++
 		if distillErr == nil {
 			applied, dropped := ApplyDistilled(conn, cfg, result.Statements)

@@ -31,6 +31,7 @@ type verdict struct {
 	Relation   string  `json:"relation"`
 	TargetID   string  `json:"target_id"`
 	Reason     string  `json:"reason"`
+	Rulebook   bool    `json:"rulebook"`
 }
 
 func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, in Input) (learn.Assessment, error) {
@@ -46,6 +47,10 @@ func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, 
 	for _, p := range existing {
 		ids[p.ID] = true
 	}
+	// The curated rulebook (when configured) rides along so the verdict can
+	// flag restatements; empty = the feature is off and the section is
+	// omitted.
+	rulebookBlock, _ := learn.LoadRulebook(cfg)
 	var v verdict
 	validate := func(raw string) error {
 		var tmp verdict
@@ -63,17 +68,18 @@ func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, 
 		v = tmp
 		return nil
 	}
-	if _, err := j.Gateway.Complete(ctx, SystemPrompt, BuildUserPrompt(in, existing), judgeRetries, validate); err != nil {
+	if _, err := j.Gateway.Complete(ctx, SystemPrompt, BuildUserPrompt(in, existing, rulebookBlock), judgeRetries, validate); err != nil {
 		return learn.Assessment{}, err
 	}
 	a := learn.Assessment{
-		Statement:  strings.TrimSpace(v.Statement),
-		Category:   strings.TrimSpace(v.Category),
-		Confidence: learn.ClampConfidence(v.Confidence, cfg.CFloor),
-		Relation:   learn.Relation(v.Relation),
-		TargetID:   v.TargetID,
-		Reason:     v.Reason,
-		By:         "llm",
+		Statement:       strings.TrimSpace(v.Statement),
+		Category:        strings.TrimSpace(v.Category),
+		Confidence:      learn.ClampConfidence(v.Confidence, cfg.CFloor),
+		Relation:        learn.Relation(v.Relation),
+		TargetID:        v.TargetID,
+		Reason:          v.Reason,
+		By:              "llm",
+		RulebookOverlap: v.Rulebook,
 	}
 	if a.Category == "" {
 		a.Category = hint

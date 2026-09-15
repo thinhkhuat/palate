@@ -10,6 +10,7 @@ import (
 
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/distill"
+	"github.com/thinhkhuat/palate/internal/learn"
 )
 
 // noticeCursorFile remembers the last event a notice covered.
@@ -141,7 +142,12 @@ func learnedLines(db *sql.DB, cfg config.Config, ids []string, since string) str
 	for _, id := range ids {
 		var cat, stmt string
 		var c float64
-		if db.QueryRow(`SELECT category, statement, confidence FROM preferences WHERE id=? AND valid_until IS NULL`, id).Scan(&cat, &stmt, &c) != nil {
+		// Rulebook-tagged rows are suppressed from TASTE.md; announcing them
+		// as "learned" would only confuse — skip them here too. The tag is
+		// matched as a quoted JSON string inside the provenance array.
+		q := fmt.Sprintf(`SELECT category, statement, confidence FROM preferences
+			WHERE id=? AND valid_until IS NULL AND provenance NOT LIKE '%%"%s"%%'`, learn.RulebookOverlap)
+		if db.QueryRow(q, id).Scan(&cat, &stmt, &c) != nil {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("- [%s] %s Confidence: %.2f", cat, strings.TrimSuffix(stmt, ".")+".", c))

@@ -11,7 +11,11 @@ type DistilledStatement struct {
 	Statement  string  `json:"statement"`
 	Category   string  `json:"category"`
 	Confidence float64 `json:"confidence"`
-	Evidence   string  `json:"evidence"`
+	// Rulebook is the model's flag that the statement merely restates a rule
+	// from the user's curated rulebook; it lands in provenance as
+	// learn.RulebookOverlap (render suppresses, consolidation retires).
+	Rulebook bool    `json:"rulebook"`
+	Evidence string  `json:"evidence"`
 }
 
 // ParseResponse tries, in order: (1) unmarshal into the requested

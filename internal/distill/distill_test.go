@@ -125,7 +125,7 @@ func TestEvidenceRedactedBeforeSend(t *testing.T) {
 	defer server.Close()
 
 	db := testDB(t)
-	_, err := Distill(context.Background(), db, gatewayFor(server), nil, "", newEvidence)
+	_, err := Distill(context.Background(), db, gatewayFor(server), nil, "", newEvidence, "")
 	if err != nil {
 		t.Fatalf("Distill: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestApplyDistilledNeverStoresRawDiffLine(t *testing.T) {
 	defer server.Close()
 
 	db := testDB(t)
-	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "", "diff:\n"+diffLine)
+	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "", "diff:\n"+diffLine, "")
 	if err != nil {
 		t.Fatalf("Distill: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestDistillRoundTripsEnvelope(t *testing.T) {
 	defer server.Close()
 
 	db := testDB(t)
-	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "previously analyzed text", "new evidence text")
+	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "previously analyzed text", "new evidence text", "")
 	if err != nil {
 		t.Fatalf("Distill: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestDistillFinalFailureBumpsParseCounter(t *testing.T) {
 	defer server.Close()
 
 	db := testDB(t)
-	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "", "new evidence")
+	result, err := Distill(context.Background(), db, gatewayFor(server), nil, "", "new evidence", "")
 	if err == nil {
 		t.Fatalf("Distill: expected an error for unparseable output")
 	}

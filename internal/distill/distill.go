@@ -24,19 +24,21 @@ type DistillResult struct {
 }
 
 // Distill scans and redacts the CURRENT PREFERENCES, PREVIOUSLY ANALYZED,
-// and NEW EVIDENCE sections for secrets, assembles the prompt, calls
+// and NEW EVIDENCE sections for secrets, assembles the prompt (the curated
+// rulebook section, when the caller loaded one, rides along so restatements
+// get the "rulebook" flag), calls
 // gw.Complete with a ParseResponse-backed validator so a malformed reply
 // gets one corrective retry, and parses the (possibly retried) reply.
 //
 // On final failure — the gateway itself errored, or the last reply still
 // doesn't parse — it bumps the llm_distilled_parse counter and returns the
 // last raw reply in DistillResult.RawReply alongside the error.
-func Distill(ctx context.Context, conn *sql.DB, gw *Gateway, existingPrefs []learn.Preference, previouslyAnalyzedText, newEvidenceText string) (DistillResult, error) {
+func Distill(ctx context.Context, conn *sql.DB, gw *Gateway, existingPrefs []learn.Preference, previouslyAnalyzedText, newEvidenceText, rulebookBlock string) (DistillResult, error) {
 	existingBlock := redactBlock(conn, FormatExistingPreferences(existingPrefs))
 	prevBlock := redactBlock(conn, previouslyAnalyzedText)
 	newBlock := redactBlock(conn, newEvidenceText)
 
-	userPrompt := BuildUserPrompt(existingBlock, prevBlock, newBlock)
+	userPrompt := BuildUserPrompt(existingBlock, prevBlock, newBlock, rulebookBlock)
 	validate := func(raw string) error {
 		_, err := ParseResponse(raw)
 		return err

@@ -23,7 +23,12 @@ Return the smallest set of actions that makes the profile cleaner and truer:
   row quoting code, regex, tables, JSON, vendored script bodies or pasted
   document paragraphs (the retired file-diff path wrote these; they read as
   prefers-code rather than a durable behaviour like Prefers table-driven
-  tests). Verbatim dumps are never taste: retire them even when there are
+  tests) — OR a row marked "rulebook" in its profile line: it restates a
+  rule from the CURATED RULEBOOK section (present below when the user
+  configured 'rulebook:'). The rulebook is authoritative and always loaded,
+  so the learned copy is a duplicate: retire rulebook-marked rows even
+  without other evidence, and never rewrite one into the rule's wording.
+  Verbatim dumps are never taste: retire them even when there are
   many, and never rewrite one into a cleaner code quote →
   {"type":"retire","id":"…","reason":"…"}
 

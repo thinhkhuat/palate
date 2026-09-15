@@ -33,6 +33,10 @@ type Input struct {
 	// distiller saw the transcript; the judge sees only the wording). 0 means
 	// none: the judge scores from the wording alone.
 	Confidence float64
+	// RulebookOverlap is the caller's own flag (the distiller saw the
+	// rulebook too and may have tagged the statement); merged with the LLM
+	// verdict's own flag in Apply.
+	RulebookOverlap bool
 }
 
 // Judge assesses a candidate write against the store.
@@ -60,7 +64,11 @@ func Mode(cfg config.Config) string {
 	case !cfg.LLMConfigured():
 		return "heuristic (no gateway)"
 	default:
-		return "llm (" + cfg.LLM.Model + ")"
+		// The model name comes from PALATE_LLM_MODEL (the LLM config is
+		// env-only), so the source label makes doctor's staleness visible:
+		// a process started before harness-env.sh changed prints its own
+		// stale env here, by design.
+		return "llm (" + cfg.LLM.Model + " via PALATE_LLM_MODEL)"
 	}
 }
 
@@ -79,6 +87,11 @@ func Apply(ctx context.Context, conn *sql.DB, cfg config.Config, in Input, evide
 		}
 	} else if j.Name() == "llm" {
 		storage.BumpHit(conn, "judge_llm")
+	}
+	// Either source of the rulebook flag (the caller's or the verdict's)
+	// is enough to tag the row.
+	if in.RulebookOverlap {
+		a.RulebookOverlap = true
 	}
 	sig := learn.Signal{Type: in.Signal, Statement: a.Statement, Category: a.Category, Evidence: evidence, Weight: in.Confidence}
 	p, err := learn.ApplyJudged(conn, cfg, sig, a)
@@ -104,7 +117,7 @@ func Correct(ctx context.Context, conn *sql.DB, cfg config.Config, c learn.Corre
 // against the whole profile and stored through Apply with the distiller's own
 // confidence as the hint and its evidence on the event.
 func ApplyDistilled(ctx context.Context, conn *sql.DB, cfg config.Config, s distill.DistilledStatement) error {
-	_, _, err := Apply(ctx, conn, cfg, Input{Statement: s.Statement, Signal: learn.SignalLLMDistilled, Category: s.Category, Confidence: s.Confidence}, s.Evidence)
+	_, _, err := Apply(ctx, conn, cfg, Input{Statement: s.Statement, Signal: learn.SignalLLMDistilled, Category: s.Category, Confidence: s.Confidence, RulebookOverlap: s.Rulebook}, s.Evidence)
 	return err
 }
 

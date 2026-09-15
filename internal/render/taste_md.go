@@ -70,7 +70,12 @@ func Render(conn *sql.DB, opts RenderOptions) (string, error) {
 // reads first, and prewarm truncation (which drops trailing lines) drops the
 // weakest rows first. n is the number of preferences rendered.
 func Body(conn *sql.DB, opts RenderOptions) (body string, n int, err error) {
-	q := `SELECT category, statement, confidence FROM preferences WHERE valid_until IS NULL`
+	// Rulebook-tagged rows (learn.RulebookOverlap in provenance) merely
+	// restate the user's curated rulebook — suppressed here (and therefore
+	// from the SessionStart prewarm, which renders the same bytes) until
+	// consolidation retires them.
+	q := `SELECT category, statement, confidence FROM preferences WHERE valid_until IS NULL
+		AND provenance NOT LIKE '%"` + learn.RulebookOverlap + `"%'`
 	if !opts.IncludeConflicted {
 		q += ` AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)`
 	}

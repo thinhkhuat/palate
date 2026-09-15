@@ -71,6 +71,15 @@ history, and memsearch journals into `llm_distilled` preferences —
 by default** — no env set, no distiller, today's regex/verbatim paths keep
 working unchanged. Details: [INSTALL.md §5](INSTALL.md#5-llm-taste-distiller-optional).
 
+### Rulebook dedupe (optional)
+
+Set `rulebook: ~/.claude/CLAUDE.md` in `config.yaml` to point palate at your
+curated rulebook. Distilled or judged preferences that merely restate one of
+its rules are tagged in provenance, never rendered into `TASTE.md` (or the
+SessionStart prewarm), and retired by the next consolidation pass — the
+consolidator sees the rulebook too, so already-stored restatements are caught
+without re-learning. Unset (the default), the feature is off.
+
 ---
 
 ## Harnesses — honest support
