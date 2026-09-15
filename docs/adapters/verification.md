@@ -46,3 +46,29 @@ Evidence from the deployed plugin, not from docs — recorded so the table above
 | **Codex** | MCP `serve` (recall-only) | Manifest `.codex-plugin/mcp.json` resolves; `scripts/verify-plugin-mcp.sh` form B (relative cwd) passes. Live Codex hooks **not observed** — stays recall-only |
 
 Prerequisite that bit once: the distiller only runs when `PALATE_LLM_ENDPOINT/MODEL/API_KEY` reach the harness process. A terminal opened before `~/.config/harness-env.sh` gained the block silently leaves them unset — relaunch the harness from a fresh shell and check `palate doctor` → `judge:` before concluding the distiller is broken.
+
+## Live-wired vs verified-at-build (2026-09-16)
+
+The table above records **build-time** claims: a harness whose hook surface was
+checked against live docs *can* learn once wired. It says nothing about what is
+actually installed on any given machine. `palate doctor` therefore prints the
+two claims separately:
+
+```
+adapters: 13 registry (3 verified for learning; live-wired: Claude Code, Command Code, ZCode, Codex)
+adapter: Claude Code      learning     wired            (plugin hooks v0.1.0) — palate hook install
+adapter: Codex            recall-only  wired            (MCP stdio (config.toml mcp_servers.palate)) — palate serve (MCP)
+```
+
+- `learning` / `recall-only` — the build-time `Verified` flag from
+  `internal/adapters/registry.go` (this file's evidence table).
+- `wired` / `not wired` / `harness absent` — live wiring computed from the
+  machine at doctor time (`internal/adapters/wiring.go`): plugin-cache hooks,
+  `enabledPlugins`, global settings hooks, ZCode config hooks, or a Codex
+  `mcp_servers.palate` stdio table.
+
+A row can be `learning` yet `not wired` (verified docs, nothing installed) —
+that combination is the review finding that motivated this split: doctor used
+to report "3 verified for learning" in a way that read as three harnesses
+capturing, while only Claude Code was actually wired. Every wiring write backs
+up the target config first (`<config>.bak-palate-<timestamp>`).

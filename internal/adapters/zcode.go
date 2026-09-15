@@ -67,6 +67,11 @@ func writeZCodeConfigAt(path string, binaryPath string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
+	// Back up the pre-write config before the first palate mutation
+	// (concierge convention; no-op when the file does not exist yet).
+	if err := backupBeforeWrite(path); err != nil {
+		return err
+	}
 	root := map[string]interface{}{}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &root)

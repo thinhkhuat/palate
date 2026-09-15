@@ -201,13 +201,39 @@ func cmdDoctor() *cobra.Command {
 			_ = db.QueryRow(`SELECT count(*) FROM fts_working WHERE fts_working MATCH 'test'`).Scan(&fts)
 			fmt.Printf("fts5: ok\n")
 			fmt.Printf("vector: json+cosine (native vec behind build tag)\n")
-			fmt.Printf("adapters: %d (%d verified for learning)\n", len(adapters.Registry), countVerified(adapters.Registry))
+			// Two different claims, printed separately: Verified is the
+			// build-time docs check ("CAN learn once wired"), LiveWiring is
+			// what is actually installed on THIS machine right now.
+			live := adapters.LiveWiring()
+			var wired []string
+			for _, a := range adapters.Registry {
+				if w, ok := live[a.Name]; ok && w.State == adapters.WiringWired {
+					wired = append(wired, a.Name)
+				}
+			}
+			wiredNames := "none"
+			if len(wired) > 0 {
+				wiredNames = strings.Join(wired, ", ")
+			}
+			fmt.Printf("adapters: %d registry (%d verified for learning; live-wired: %s)\n", len(adapters.Registry), countVerified(adapters.Registry), wiredNames)
 			for _, a := range adapters.Registry {
 				status := "recall-only"
 				if a.Verified {
 					status = "learning"
 				}
-				fmt.Printf("adapter: %-16s %-12s — %s\n", a.Name, status, a.Install)
+				w, _ := live[a.Name]
+				wire := "not wired"
+				detail := ""
+				switch w.State {
+				case adapters.WiringWired:
+					wire = "wired"
+				case adapters.WiringAbsent:
+					wire = "harness absent"
+				}
+				if w.State == adapters.WiringWired && w.Detail != "" {
+					detail = " (" + w.Detail + ")"
+				}
+				fmt.Printf("adapter: %-16s %-12s %-16s%s — %s\n", a.Name, status, wire, detail, a.Install)
 			}
 			scan := safety.Scan("test content")
 			fmt.Printf("scanner: ok (flagged=%v)\n", scan.Flagged)
@@ -830,7 +856,8 @@ func cmdHook() *cobra.Command {
 		Short: "Install palate hooks (Claude Code, Command Code, ZCode)",
 		Long: "Writes palate hook entries into harness settings, idempotently.\n" +
 			"Targets: claude_code (.claude/settings.local.json), command_code (.commandcode/settings.local.json),\n" +
-			"zcode (.zcode/config.json, workspace) and zcode-global (~/.zcode/cli/config.json).\n" +
+			"command_code-global (~/.commandcode/settings.json, global), zcode (.zcode/config.json, workspace)\n" +
+			"and zcode-global (~/.zcode/cli/config.json).\n" +
 			"Default with no --harness: claude_code, command_code, zcode.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, _ := os.Getwd()
@@ -840,7 +867,7 @@ func cmdHook() *cobra.Command {
 				return err
 			}
 			var installed []string
-			for _, h := range []string{"claude_code", "command_code", "zcode", "zcode-global"} {
+			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global"} {
 				if !want[h] {
 					continue
 				}
@@ -849,6 +876,8 @@ func cmdHook() *cobra.Command {
 					err = adapters.WriteClaudeCodeHooks(cwd, bin)
 				case "command_code":
 					err = adapters.WriteCommandCodeHooks(cwd, bin)
+				case "command_code-global":
+					err = adapters.WriteCommandCodeHooksGlobal(bin)
 				case "zcode":
 					err = adapters.WriteZCodeHooks(cwd, bin)
 				case "zcode-global":
@@ -865,7 +894,7 @@ func cmdHook() *cobra.Command {
 		},
 	}
 	install.Flags().StringSliceVar(&installHarnesses, "harness", nil,
-		"claude_code|command_code|zcode|zcode-global (comma-separated; default: claude_code,command_code,zcode)")
+		"claude_code|command_code|command_code-global|zcode|zcode-global (comma-separated; default: claude_code,command_code,zcode)")
 	c.AddCommand(install)
 
 	var uninstallHarnesses []string
@@ -878,7 +907,7 @@ func cmdHook() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, h := range []string{"claude_code", "command_code", "zcode", "zcode-global"} {
+			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global"} {
 				if !want[h] {
 					continue
 				}
@@ -888,6 +917,8 @@ func cmdHook() *cobra.Command {
 					n, err = adapters.RemoveClaudeCodeHooks(cwd)
 				case "command_code":
 					n, err = adapters.RemoveCommandCodeHooks(cwd)
+				case "command_code-global":
+					n, err = adapters.RemoveCommandCodeHooksGlobal()
 				case "zcode":
 					n, err = adapters.RemoveZCodeHooksAt(adapters.ZCodeWorkspaceConfigPath(cwd))
 				case "zcode-global":
@@ -916,7 +947,7 @@ func cmdHook() *cobra.Command {
 		},
 	}
 	uninstall.Flags().StringSliceVar(&uninstallHarnesses, "harness", nil,
-		"claude_code|command_code|zcode|zcode-global (default: all)")
+		"claude_code|command_code|command_code-global|zcode|zcode-global (default: all)")
 	c.AddCommand(uninstall)
 
 	c.AddCommand(&cobra.Command{
@@ -936,6 +967,9 @@ func cmdHook() *cobra.Command {
 			}
 			for i := range rows {
 				rows[i].count = adapters.CountPalateHooksTopLevel(rows[i].path)
+			}
+			if ccGlobal, err := adapters.CommandCodeGlobalSettingsPath(); err == nil {
+				rows = append(rows, row{"command_code-global", ccGlobal, adapters.CountPalateHooksTopLevel(ccGlobal)})
 			}
 			zc := row{"zcode", adapters.ZCodeWorkspaceConfigPath(cwd), 0}
 			zc.count = adapters.CountPalateHooksZCode(zc.path)
@@ -1218,12 +1252,12 @@ func parseHarnessList(list []string) (map[string]bool, error) {
 		}
 		return want, nil
 	}
-	valid := map[string]bool{"claude_code": true, "command_code": true, "zcode": true, "zcode-global": true}
+	valid := map[string]bool{"claude_code": true, "command_code": true, "command_code-global": true, "zcode": true, "zcode-global": true}
 	for _, item := range list {
 		for _, h := range strings.Split(item, ",") {
 			h = strings.TrimSpace(h)
 			if !valid[h] {
-				return nil, fmt.Errorf("unknown harness %q (valid: claude_code, command_code, zcode, zcode-global)", h)
+				return nil, fmt.Errorf("unknown harness %q (valid: claude_code, command_code, command_code-global, zcode, zcode-global)", h)
 			}
 			want[h] = true
 		}
