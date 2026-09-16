@@ -56,6 +56,7 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 | **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the whole profile, 2000-tok budget dropping whole lines only + UserPromptSubmit `additionalContext` ~200 tok; SessionStart also posts a `systemMessage` with what was learned since last time) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **Command Code** | hook-based learning (mirrors Claude Code via `~/.commandcode`) | same as Claude Code | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **ZCode** | hook-based learning (SessionStart / UserPromptSubmit / PostToolUse / Stop — no PreCompact event exists) | push prewarm (strict-JSON `additionalContext`) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
+| **Cline** | hook-based learning (TaskStart / TaskResume / UserPromptSubmit / PostToolUse / TaskComplete / TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
 | **OMP (oh-my-pi)** | recall-only (hooks unverified) | MCP recall (`palate serve`) | [§2.2](#22-omp-oh-my-pi--hermes--recall-only-until-verified) |
 | **Hermes** | recall-only (hooks unverified) | MCP recall (`palate serve`) | [§2.2](#22-omp-oh-my-pi--hermes--recall-only-until-verified) |
 | **Pi** | recall-only (hooks unverified) | MCP recall | [§2.3](#23-pi--openclaw--opencode--recall-only) |
@@ -115,9 +116,9 @@ Codex have one); ZCode and any setup that isn't using the plugin path still
 wire hooks by hand:
 
 ```sh
-palate hook install          # .claude/settings.local.json + .commandcode/settings.local.json + .zcode/config.json (workspace)
+palate hook install          # .claude/settings.local.json + .commandcode/settings.local.json + .zcode/config.json (workspace) + ~/.cline/hooks (event shims)
 # restart the harness so it picks up the hooks
-palate doctor                # adapter: Claude Code learning · Command Code learning · ZCode learning
+palate doctor                # adapter: Claude Code learning · Command Code learning · ZCode learning · Cline learning
 ```
 
 > Hook handlers open the DB with the same auto-create as `palate init`: the first hook that fires creates the Palate home (0700/0600) — `~/.claude/palate/` by default, or the repo's own `.palate/` when that legacy layout already exists. Run `palate init` first if you want that moment to be explicit.
@@ -130,9 +131,10 @@ palate hook install --harness claude_code    # .claude/settings.local.json
 palate hook install --harness command_code   # .commandcode/settings.local.json
 palate hook install --harness zcode          # .zcode/config.json (workspace)
 palate hook install --harness zcode-global   # ~/.zcode/cli/config.json (all workspaces)
+palate hook install --harness cline          # ~/.cline/hooks (one <Event>.mjs shim per event)
 # verify what was written
 palate hook help                             # wiring status per harness
-palate doctor | grep -E "adapter: (Claude Code|Command Code|ZCode)"
+palate doctor | grep -E "adapter: (Claude Code|Command Code|ZCode|Cline)"
 ```
 
 > **Reinstall after upgrading:** `SessionStart` now runs `palate hook session-start`

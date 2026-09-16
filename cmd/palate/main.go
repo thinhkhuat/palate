@@ -875,9 +875,9 @@ func cmdHook() *cobra.Command {
 		Short: "Install palate hooks (Claude Code, Command Code, ZCode)",
 		Long: "Writes palate hook entries into harness settings, idempotently.\n" +
 			"Targets: claude_code (.claude/settings.local.json), command_code (.commandcode/settings.local.json),\n" +
-			"command_code-global (~/.commandcode/settings.json, global), zcode (.zcode/config.json, workspace)\n" +
-			"and zcode-global (~/.zcode/cli/config.json).\n" +
-			"Default with no --harness: claude_code, command_code, zcode.",
+			"command_code-global (~/.commandcode/settings.json, global), zcode (.zcode/config.json, workspace),\n" +
+			"zcode-global (~/.zcode/cli/config.json) and cline (~/.cline/hooks, event shims).\n" +
+			"Default with no --harness: claude_code, command_code, zcode, cline.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, _ := os.Getwd()
 			bin := hookBinaryPath()
@@ -886,7 +886,7 @@ func cmdHook() *cobra.Command {
 				return err
 			}
 			var installed []string
-			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global"} {
+			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global", "cline"} {
 				if !want[h] {
 					continue
 				}
@@ -901,6 +901,8 @@ func cmdHook() *cobra.Command {
 					err = adapters.WriteZCodeHooks(cwd, bin)
 				case "zcode-global":
 					err = adapters.WriteZCodeHooksGlobal(bin)
+				case "cline":
+					err = adapters.WriteClineHooksGlobal(bin)
 				}
 				if err != nil {
 					return fmt.Errorf("%s: %w", h, err)
@@ -913,7 +915,7 @@ func cmdHook() *cobra.Command {
 		},
 	}
 	install.Flags().StringSliceVar(&installHarnesses, "harness", nil,
-		"claude_code|command_code|command_code-global|zcode|zcode-global (comma-separated; default: claude_code,command_code,zcode)")
+		"claude_code|command_code|command_code-global|zcode|zcode-global|cline (comma-separated; default: claude_code,command_code,zcode,cline)")
 	c.AddCommand(install)
 
 	var uninstallHarnesses []string
@@ -926,7 +928,7 @@ func cmdHook() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global"} {
+			for _, h := range []string{"claude_code", "command_code", "command_code-global", "zcode", "zcode-global", "cline"} {
 				if !want[h] {
 					continue
 				}
@@ -945,6 +947,8 @@ func cmdHook() *cobra.Command {
 					if p, err = adapters.ZCodeGlobalConfigPath(); err == nil {
 						n, err = adapters.RemoveZCodeHooksAt(p)
 					}
+				case "cline":
+					n, err = adapters.RemoveClineHooksGlobal()
 				}
 				if err != nil {
 					return fmt.Errorf("%s: %w", h, err)
@@ -966,7 +970,7 @@ func cmdHook() *cobra.Command {
 		},
 	}
 	uninstall.Flags().StringSliceVar(&uninstallHarnesses, "harness", nil,
-		"claude_code|command_code|command_code-global|zcode|zcode-global (default: all)")
+		"claude_code|command_code|command_code-global|zcode|zcode-global|cline (default: all)")
 	c.AddCommand(uninstall)
 
 	c.AddCommand(&cobra.Command{
@@ -995,6 +999,9 @@ func cmdHook() *cobra.Command {
 			rows = append(rows, zc)
 			if globalPath, err := adapters.ZCodeGlobalConfigPath(); err == nil {
 				rows = append(rows, row{"zcode-global", globalPath, adapters.CountPalateHooksZCode(globalPath)})
+			}
+			if clineDir, err := adapters.ClineHooksDir(); err == nil {
+				rows = append(rows, row{"cline", clineDir, adapters.CountClineHooks(clineDir)})
 			}
 			for _, r := range rows {
 				status := "not installed"
@@ -1266,17 +1273,16 @@ func pluginHooksInstalled() bool {
 func parseHarnessList(list []string) (map[string]bool, error) {
 	want := map[string]bool{}
 	if len(list) == 0 {
-		for _, h := range []string{"claude_code", "command_code", "zcode"} {
+		for _, h := range []string{"claude_code", "command_code", "zcode", "cline"} {
 			want[h] = true
 		}
-		return want, nil
 	}
-	valid := map[string]bool{"claude_code": true, "command_code": true, "command_code-global": true, "zcode": true, "zcode-global": true}
+	valid := map[string]bool{"claude_code": true, "command_code": true, "command_code-global": true, "zcode": true, "zcode-global": true, "cline": true}
 	for _, item := range list {
 		for _, h := range strings.Split(item, ",") {
 			h = strings.TrimSpace(h)
 			if !valid[h] {
-				return nil, fmt.Errorf("unknown harness %q (valid: claude_code, command_code, command_code-global, zcode, zcode-global)", h)
+				return nil, fmt.Errorf("unknown harness %q (valid: claude_code, command_code, command_code-global, zcode, zcode-global, cline)", h)
 			}
 			want[h] = true
 		}
@@ -1751,7 +1757,7 @@ func cmdLearnSession() *cobra.Command {
 			return learnFailure(summary)
 		},
 	}
-	c.Flags().StringVar(&harness, "harness", "", "harness override: claude_code|command_code|pi|codex|opencode|gemini_cli|memsearch|zcode")
+	c.Flags().StringVar(&harness, "harness", "", "harness override: claude_code|command_code|cline|pi|codex|opencode|gemini_cli|memsearch|zcode")
 	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model")
 	return c
 }
@@ -2013,13 +2019,14 @@ func inferHarnessFromPath(path string) (string, error) {
 		{"codex", filepath.Join(home, ".codex", "sessions")},
 		{"gemini_cli", filepath.Join(home, ".gemini", "tmp")},
 		{"zcode", filepath.Join(home, ".zcode", "cli", "rollout")},
+		{"cline", filepath.Join(home, ".cline", "data", "sessions")},
 	}
 	for _, r := range roots {
 		if r.root != "" && strings.HasPrefix(abs, r.root) {
 			return r.harness, nil
 		}
 	}
-	return "", fmt.Errorf("cannot infer harness from path %q; pass --harness (claude_code|command_code|pi|codex|opencode|gemini_cli|memsearch|zcode)", path)
+	return "", fmt.Errorf("cannot infer harness from path %q; pass --harness (claude_code|command_code|cline|pi|codex|opencode|gemini_cli|memsearch|zcode)", path)
 }
 
 func mustHomeDir() string {

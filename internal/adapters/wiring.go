@@ -154,6 +154,18 @@ func wiringCodex() Wiring {
 	return Wiring{State: WiringNotWired}
 }
 
+func wiringCline() Wiring {
+	dir, ok := homePath(".cline")
+	if !ok || !dirPresent(dir) {
+		return Wiring{State: WiringAbsent}
+	}
+	hooks, _ := homePath(".cline", "hooks")
+	if n := CountClineHooks(hooks); n > 0 {
+		return Wiring{State: WiringWired, Detail: fmt.Sprintf("%d hook shims", n)}
+	}
+	return Wiring{State: WiringNotWired}
+}
+
 // LiveWiring returns the live wiring snapshot keyed by Registry names.
 // Harnesses without a dedicated detector report NotWired: they are MCP
 // adapters, and nothing can be wired unless `palate serve` is configured in
@@ -164,6 +176,7 @@ func LiveWiring() map[string]Wiring {
 		"Command Code": wiringCommandCode(),
 		"ZCode":        wiringZCode(),
 		"Codex":        wiringCodex(),
+		"Cline":        wiringCline(),
 	}
 	for _, a := range Registry {
 		if _, ok := out[a.Name]; !ok {

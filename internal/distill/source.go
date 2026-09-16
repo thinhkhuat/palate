@@ -19,6 +19,7 @@ func AllReaders() []Reader {
 	return []Reader{
 		claudeCodeReader{},
 		newCommandCodeReader(),
+		clineReader{},
 		newPiReader(),
 		codexReader{},
 		openCodeReader{},

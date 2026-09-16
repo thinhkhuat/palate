@@ -7,6 +7,7 @@
 | Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
 | Command Code | hook-based learning (mirrors Claude Code) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
 | ZCode | hook-based learning (SessionStart/UserPromptSubmit/PostToolUse/Stop — no PreCompact event) | push prewarm (strict-JSON `additionalContext`; `hooks.enabled: true` required) | `palate hook install` |
+| Cline | hook-based learning (TaskStart/TaskResume/UserPromptSubmit/PostToolUse/TaskComplete/TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | `palate hook install --harness cline` |
 | OMP (oh-my-pi) | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | Hermes | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | Pi | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
