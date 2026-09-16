@@ -17,7 +17,7 @@ Harness-native "taste" (like Command Code's closed one) works because the harnes
 - **Observable signals only:** `model_edit`, `user_correction`, `stated_preference`, `explicit_prefer/reject/accept`, `llm_distilled` — no invented `accept/reject` primitive. The old `user_diff (w=0.6 hypothesis)` verbatim file-diff path is retired: it stored added lines as `prefers: <code>` and poisoned the store (53 rows bulk-retired 2026-09-15); the same edits are covered by the LLM distiller via the transcript.
 - **Your LLM gateway is the taste brain.** With `PALATE_LLM_*` set, the model judges every write — explicit *and* distilled — against the whole profile (wording, category, confidence, and whether it is new / the same / a refinement / a contradiction of what is stored, so a paraphrase reinforces the row instead of becoming a second bullet), distills transcripts, journals and git, and periodically consolidates the whole profile (`palate consolidate`: merge, rewrite, rescore, retire — review mode files proposals). Without a gateway the built-in heuristics run exactly as before.
 - **Push prewarm:** SessionStart injects your **whole profile** — the same lines as `TASTE.md`, grouped by category, confidence-ranked — once per session (2 000-token budget; over it, the weakest rows drop first and the block says how many), plus a ~200-tok UserPromptSubmit block only when your *intent* changes. Whatever the detached learner stored since your last prompt is announced at the next one (`palate: since your last prompt — learned 1 …`) and handed to the model as a `<palate-learned>` block, so a preference learned at the previous turn applies from the next — Command Code's inline "taste learned" notices. An empty profile says so and that it fills itself in. What you can review is exactly what the agent gets (Command Code parity).
-- **One durable home, every harness.** `~/.claude/palate/` (override `PALATE_HOME`) holds the store for Claude Code, Codex, Command Code and ZCode alike — same placement as skill-concierge. A repo that still has `./.palate/palate.db` keeps that legacy layout by detection.
+- **One durable home, every harness.** `~/.claude/palate/` (override `PALATE_HOME`) holds the store for Claude Code, Codex, Command Code, ZCode and Cline alike — same placement as skill-concierge. A repo that still has `./.palate/palate.db` keeps that legacy layout by detection.
 - **TASTE.md is a render, kept current — not the truth.** The `events` log in `palate.db` is the source of truth; `TASTE.md` beside it is re-rendered after every write (hooks, CLI, MCP, distiller), each line tagged with its source and trust tier, so you can review what Palate learned without opening SQLite. `palate push` exports a git-shareable copy into the repo.
 
 ---
@@ -40,7 +40,7 @@ codex plugin add palate@palate
 
 The plugin's `bin/palate` launcher resolves a binary itself (an existing
 install on `PATH`, or a local `go build` fallback) — you don't need the
-binary preinstalled first. Command Code, ZCode, and no-plugin setups still
+binary preinstalled first. Command Code, ZCode, Cline, and no-plugin setups still
 use `palate hook install` — see [INSTALL.md](INSTALL.md) §2.1.
 
 ## 30-second start (no plugin — manual wiring)
@@ -48,8 +48,8 @@ use `palate hook install` — see [INSTALL.md](INSTALL.md) §2.1.
 ```sh
 sh install.sh                           # private repo: needs `gh auth login` or GITHUB_TOKEN; or: GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest
 palate init
-palate doctor                          # → green? (sqlite, fts5, vector, 13 adapters, scanner)
-palate hook install                    # Claude Code + Command Code + ZCode — one command
+palate doctor                          # → green? (sqlite, fts5, vector, 14 adapters, scanner)
+palate hook install                    # Claude Code + Command Code + ZCode + Cline — one command
 
 palate prefer "use table-driven tests"
 palate recall "testing" --json
@@ -91,13 +91,14 @@ without re-learning. Unset (the default), the feature is off.
 | **Claude Code** | **Learning** — hook-based (`PostToolUse` / `UserPromptSubmit` / `Stop` / `SessionStart` + `PreCompact`) | `palate hook install` |
 | **Command Code** | **Learning** — mirrors Claude Code via `~/.commandcode` | `palate hook install` |
 | **ZCode** | **Learning** — hook-based (`SessionStart` / `UserPromptSubmit` / `PostToolUse` / `Stop`; strict-JSON hook output) | `palate hook install` |
+| **Cline** | **Learning** — hook-based (`TaskStart` / `TaskResume` / `UserPromptSubmit` / `PostToolUse` / `TaskComplete` / `TaskCancel` — file-hook shims in `~/.cline/hooks`; `contextModification` injection) | `palate hook install --harness cline` |
 | **OMP (oh-my-pi)** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Hermes** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Pi / OpenClaw / OpenCode** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
 | **Codex / Cursor / Windsurf / OpenWebUI** | Recall-only | `palate serve` (MCP) |
 | **Generic MCP** | Recall-only | `palate serve` (stdio / `--port` SSE) |
 
-> Beyond Claude Code / Command Code / ZCode, every adapter is **recall-only until its hooks are proven**. Palate never overclaims.
+> Beyond Claude Code / Command Code / ZCode / Cline, every adapter is **recall-only until its hooks are proven**. Palate never overclaims.
 
 Per-harness wiring (human + agent copy-paste): [`INSTALL.md`](INSTALL.md) §2
 
@@ -126,10 +127,10 @@ See [`docs/architecture.md`](docs/architecture.md), [`docs/TASTE-format.md`](doc
 | Command | What it does |
 |---------|-------------|
 | `palate init` | Create the Palate home (`~/.claude/palate/`: `palate.db` 0700/0600 WAL, `state/`, `backups/`, seeded `config.yaml`) |
-| `palate doctor` | Check sqlite, fts5, vector, 13 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
+| `palate doctor` | Check sqlite, fts5, vector, 14 adapters, scanner; exits non-zero on a missing or corrupt DB and never creates one |
 | `palate store / recall / sleep / stats / forget` | Memory tiers — `recall --as-of RFC3339 --include-conflicted`; `recall` prints the `id=` that `forget` takes, for memories and preferences alike |
 | `palate prefer / correct` | Explicit signals (`prefer` / 4-field `correct [tried] [wrong_because] [fix] [trigger_context]`); both refuse secret and injection patterns; with a gateway the model judges wording, category, confidence and relation, and the verdict is printed |
-| `palate learn {session,sessions,journals,repo}` | The distiller on demand: one transcript, every discovered transcript (8 readers), memsearch journals, or a git history — `repo` takes a local path, a GitHub `owner/repo`, or a clone URL (temp clone, cursor kept under the URL). The hooks run `session` for you unless `distill.mode: off` or the cwd is under `distill.skip_dirs` |
+| `palate learn {session,sessions,journals,repo}` | The distiller on demand: one transcript, every discovered transcript (9 readers, Cline included), memsearch journals, or a git history — `repo` takes a local path, a GitHub `owner/repo`, or a clone URL (temp clone, cursor kept under the URL). The hooks run `session` for you unless `distill.mode: off` or the cwd is under `distill.skip_dirs` |
 | `palate consolidate` | Whole-profile review by the gateway: merge / rewrite / rescore / retire (auto after a backup, or proposals in `distill.mode: review`); auto-fired by SessionStart every `consolidate.every_events` events; also run by `sleep` |
 | `palate propose / promote --as` | Determinism boundary — proposals never auto-enter `events` |
 | `palate prewarm` | Emit `<palate-prewarm scope="…">` (SessionStart + intent; `--scope goal` needs `--prompt`) |

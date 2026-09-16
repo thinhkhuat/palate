@@ -15,7 +15,7 @@ Verify:
 ```sh
 palate --help
 palate init     # creates the home (~/.claude/palate), the DB and a commented config.yaml (unset keys follow the binary defaults); doctor never creates it as a side effect
-palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 13 adapters, scanner ok, doctor: green
+palate doctor   # expect: sqlite 3.5x, fts5 ok, vector json+cosine, 14 adapters, scanner ok, doctor: green
 ```
 
 ## 1. First run (all harnesses)
@@ -53,10 +53,10 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 | Harness | Capture capability (honest) | Injection path | Install hint |
 |---------|----------------------------|----------------|--------------|
-| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the whole profile, 2000-tok budget dropping whole lines only + UserPromptSubmit `additionalContext` ~200 tok; SessionStart also posts a `systemMessage` with what was learned since last time) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
-| **Command Code** | hook-based learning (mirrors Claude Code via `~/.commandcode`) | same as Claude Code | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
-| **ZCode** | hook-based learning (SessionStart / UserPromptSubmit / PostToolUse / Stop — no PreCompact event exists) | push prewarm (strict-JSON `additionalContext`) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
-| **Cline** | hook-based learning (TaskStart / TaskResume / UserPromptSubmit / PostToolUse / TaskComplete / TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | [§2.1](#21-claude-code--command-code--zcode--hook-based-learning) |
+| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the whole profile, 2000-tok budget dropping whole lines only + UserPromptSubmit `additionalContext` ~200 tok; SessionStart also posts a `systemMessage` with what was learned since last time) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
+| **Command Code** | hook-based learning (mirrors Claude Code via `~/.commandcode`) | same as Claude Code | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
+| **ZCode** | hook-based learning (SessionStart / UserPromptSubmit / PostToolUse / Stop — no PreCompact event exists) | push prewarm (strict-JSON `additionalContext`) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
+| **Cline** | hook-based learning (TaskStart / TaskResume / UserPromptSubmit / PostToolUse / TaskComplete / TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
 | **OMP (oh-my-pi)** | recall-only (hooks unverified) | MCP recall (`palate serve`) | [§2.2](#22-omp-oh-my-pi--hermes--recall-only-until-verified) |
 | **Hermes** | recall-only (hooks unverified) | MCP recall (`palate serve`) | [§2.2](#22-omp-oh-my-pi--hermes--recall-only-until-verified) |
 | **Pi** | recall-only (hooks unverified) | MCP recall | [§2.3](#23-pi--openclaw--opencode--recall-only) |
@@ -72,7 +72,7 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 ---
 
-### 2.1 Claude Code + Command Code + ZCode — hook-based learning
+### 2.1 Claude Code + Command Code + ZCode + Cline — hook-based learning
 
 **What you get:** passive learning (`model_edit`, `user_correction`, `stated_preference`) + `explicit_*` tools + prewarm injection. (The old `user_diff` verbatim file-diff path is retired — see `docs/TASTE-format.md`.)
 
@@ -109,11 +109,11 @@ installed, retire the workspace-level entries it now duplicates:
 palate hook uninstall --harness claude_code
 ```
 
-**Command Code / ZCode / no-plugin setups — `palate hook install`:**
+**Command Code / ZCode / Cline / no-plugin setups — `palate hook install`:**
 
 Command Code has no plugin system here (out of scope — only Claude Code and
-Codex have one); ZCode and any setup that isn't using the plugin path still
-wire hooks by hand:
+Codex have one); ZCode, Cline, and any setup that isn't using the plugin path
+still wire hooks by hand:
 
 ```sh
 palate hook install          # .claude/settings.local.json + .commandcode/settings.local.json + .zcode/config.json (workspace) + ~/.cline/hooks (event shims)
@@ -149,6 +149,14 @@ palate doctor | grep -E "adapter: (Claude Code|Command Code|ZCode|Cline)"
 - The hook runner parses stdout as **strict JSON** (extra keys fail validation), so `palate hook session-start` emits `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}` instead of plain text.
 - `PostToolUse` matcher `Edit|Write` is a case-sensitive regex that also covers the `ApplyPatch` alias.
 
+**Cline specifics** (why it is not a byte-copy of the Claude Code wiring):
+
+- Hook files live in `~/.cline/hooks` (plus workspace search paths) and are discovered by **basename minus extension**, matched case-insensitively against the event names, over a fixed extension allowlist. Every matching file fires and its returned `contextModification` strings are merged — palate installs **collision-free `<Event>.mjs` shims** next to foreign hook files (skill-concierge's bare-name and `.cjs` shims keep firing).
+- Events map to palate's unchanged subcommands: `TaskStart`/`TaskResume` → `hook session-start` (source `startup`/`resume`), `UserPromptSubmit` → `hook user-prompt`, `PostToolUse` → `hook post-tool-use` (edit-file tools; Cline names them `write_to_file`/`replace_in_file`/`apply_diff` and may JSON-quote parameter values — the shim absorbs both), `TaskComplete`/`TaskCancel` → `hook stop` (re-baseline + detached distill). There is **no `Stop` event and no file-hook `PreCompact` dispatch** — the pre-compact gateway is in-process, so palate's recovery handler is not wired here.
+- A foreign file occupying exactly `<Event>.mjs` makes the install **fail loudly** — Cline fires every match, so overwriting it would silently kill that foreign hook; the operator resolves the conflict by hand.
+- The shim resolves the transcript for `taskId` from the session metadata record (`session_id` / `messages_path` in `~/.cline/data/sessions/<dir>/<dir>.json`), so the distiller reads the exact transcript of the task that just ended.
+- Injection is the `contextModification` field (50 000-char cap) of the one-JSON-line stdout; everything is fail-open — an error emits `{"cancel":false}` and never blocks the session.
+
 **Smoke:**
 
 ```sh
@@ -157,7 +165,7 @@ palate prewarm --scope session | head -20
 palate prewarm --scope goal --prompt "write table-driven tests" | head -20
 ```
 
-Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `<home>/state/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code / Command Code only).
+Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go`, `internal/adapters/cline.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `<home>/state/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code / Command Code only). Cline: `TaskStart`/`TaskResume`/`UserPromptSubmit`/`PostToolUse`/`TaskComplete`/`TaskCancel` shim the same four subcommands (`session-start` with source `startup`/`resume`, `user-prompt`, `post-tool-use`, `stop`); the distill transcript comes from the session metadata record.
 
 ---
 
@@ -394,7 +402,7 @@ palate lint                            # lints the auto-maintained file → lint
 
 ```sh
 # hook-based harnesses (removes only palate entries; foreign hooks preserved)
-palate hook uninstall                    # claude_code + command_code + zcode (workspace)
+palate hook uninstall                    # claude_code + command_code + zcode (workspace) + cline (~/.cline/hooks shims)
 palate hook uninstall --harness zcode-global
 # recall-only harnesses: remove the {"palate": {"command":"palate",...}} entry from the harness MCP config
 rm -rf ~/.claude/palate               # the global home (DB, TASTE.md, state, backups) — events log is gone with the DB

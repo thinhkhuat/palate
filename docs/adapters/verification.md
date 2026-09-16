@@ -56,7 +56,7 @@ actually installed on any given machine. `palate doctor` therefore prints the
 two claims separately:
 
 ```
-adapters: 13 registry (3 verified for learning; live-wired: Claude Code, Command Code, ZCode, Codex)
+adapters: 14 registry (4 verified for learning; live-wired: Claude Code, Command Code, ZCode, Codex, Cline)
 adapter: Claude Code      learning     wired            (plugin hooks v0.1.0) — palate hook install
 adapter: Codex            recall-only  wired            (MCP stdio (config.toml mcp_servers.palate)) — palate serve (MCP)
 ```

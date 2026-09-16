@@ -26,7 +26,7 @@ covers **Codex, Pi, OpenCode, Gemini CLI, and memsearch journals** — reading
 their *stored* transcripts/history through an LLM on the user's own gateway,
 distinct from the hook-based *live* capture the table above describes.
 Recall/injection for every harness in the table is unchanged by this. Per
-reader: Claude Code, Command Code, Codex, Pi (shares Command Code's
+reader: Claude Code, Command Code, Cline, Codex, Pi (shares Command Code's
 envelope reader), OpenCode, and memsearch are confirmed against a live
 transcript/db on this machine; Gemini CLI's `user`-role extraction is
 confirmed live but its assistant/model role name was never observed on disk

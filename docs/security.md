@@ -49,7 +49,7 @@ otherwise this whole path is dead code, nothing leaves the machine.
 
 ## What is not wired (honest)
 
-- Full harness matrix — learning is proven on Claude Code / Command Code / ZCode; the rest are recall-only until `docs/adapters/verification.md` proves hooks.
+- Full harness matrix — learning is proven on Claude Code / Command Code / ZCode / Cline; the rest are recall-only until `docs/adapters/verification.md` proves hooks.
 
 ## Key handling
 
