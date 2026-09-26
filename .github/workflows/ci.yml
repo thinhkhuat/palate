@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: "1.26" } # go.mod requires 1.26.5
       - run: go vet ./...
-      - run: go test ./... 2>&1 | head -100
+      - run: go test ./...
       - run: CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate
       # doctor never creates the database (diagnose-only) and exits non-zero
       # when it is missing, so a fresh runner follows the documented quick

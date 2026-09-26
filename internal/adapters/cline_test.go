@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -82,19 +83,44 @@ func TestGenerateClineShimEscapesBinaryPath(t *testing.T) {
 	}
 }
 
-// stubPalateScript writes a stub `palate` executable that records its stdin
-// and replies with a Claude-hook-shaped JSON payload.
-func stubPalateScript(t *testing.T, dir string) string {
+// stubPalate builds a stub `palate` executable that records its stdin and
+// replies with a Claude-hook-shaped JSON payload. It is a real compiled
+// binary (.exe on Windows) because the shim spawns PALATE_BIN directly, with
+// no shell — exactly how it runs the installed palate.
+func stubPalate(t *testing.T, dir string) string {
 	t.Helper()
-	p := filepath.Join(dir, "stub-palate.sh")
-	script := `#!/bin/sh
-cat > "$STUB_STDIN_FILE"
-printf '%s\n' '{"systemMessage":"NOTICE","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"PREWARM"}}'
-`
-	if err := os.WriteFile(p, []byte(script), 0755); err != nil {
+	src := filepath.Join(dir, "stubsrc")
+	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return p
+	const prog = `package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+)
+
+func main() {
+	b, _ := io.ReadAll(os.Stdin)
+	_ = os.WriteFile(os.Getenv("STUB_STDIN_FILE"), b, 0o644)
+	fmt.Println(` + "`" + `{"systemMessage":"NOTICE","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"PREWARM"}}` + "`" + `)
+}
+`
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(prog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "stub-palate")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, "main.go")
+	cmd.Dir = src
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build stub palate: %v\n%s", err, out)
+	}
+	return bin
 }
 
 func runShim(t *testing.T, shimPath, stdin string) (stdout string) {
@@ -122,7 +148,7 @@ func TestClineShimEndToEnd(t *testing.T) {
 		t.Fatalf("node is required to run the shim e2e (Cline executes .mjs shims under node): %v", err)
 	}
 	dir := t.TempDir()
-	stub := stubPalateScript(t, dir)
+	stub := stubPalate(t, dir)
 	stdinFile := filepath.Join(dir, "stdin-recorded.json")
 	t.Setenv("STUB_STDIN_FILE", stdinFile)
 
@@ -269,13 +295,15 @@ func TestClineShimResolvesTranscriptFromMetadata(t *testing.T) {
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	meta := `{"session_id":"task-xyz","messages_path":"` + sessDir + `/realdir.messages.json"}`
+	// json-quote the path: a Windows path's backslashes are not valid raw JSON.
+	messagesPath, _ := json.Marshal(sessDir + "/realdir.messages.json")
+	meta := `{"session_id":"task-xyz","messages_path":` + string(messagesPath) + `}`
 	if err := os.WriteFile(filepath.Join(sessDir, "realdir.json"), []byte(meta), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	dir := t.TempDir()
-	stub := stubPalateScript(t, dir)
+	stub := stubPalate(t, dir)
 	stdinFile := filepath.Join(dir, "stdin.json")
 	t.Setenv("STUB_STDIN_FILE", stdinFile)
 
@@ -284,7 +312,7 @@ func TestClineShimResolvesTranscriptFromMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	runShim(t, shim, `{"taskId":"task-xyz","workspaceRoots":["/w"],"taskStart":{"taskMetadata":{}}}`)
-	assertForwardedPayload(t, stdinFile, `{"session_id":"task-xyz","transcript_path":"`+sessDir+`/realdir.messages.json","cwd":"/w","source":"startup"}`)
+	assertForwardedPayload(t, stdinFile, `{"session_id":"task-xyz","transcript_path":`+string(messagesPath)+`,"cwd":"/w","source":"startup"}`)
 }
 
 func TestWriteClineShimsMergesAndPreserves(t *testing.T) {
