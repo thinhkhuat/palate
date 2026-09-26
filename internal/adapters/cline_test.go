@@ -54,6 +54,34 @@ func TestGenerateClineShimContract(t *testing.T) {
 	}
 }
 
+// A Windows install path carries backslashes (and `\001`-like segments that
+// strict-mode ESM rejects as octal escapes); any path may carry a quote. The
+// shim must still parse and hold the exact path.
+func TestGenerateClineShimEscapesBinaryPath(t *testing.T) {
+	bin := `C:\Users\run'ner\AppData\Local\Temp\001\palate.exe`
+	shim := GenerateClineShim("TaskStart", "session-start", bin)
+	_, rest, ok := strings.Cut(shim, "const PALATE_BIN = ")
+	if !ok {
+		t.Fatal("shim has no PALATE_BIN constant")
+	}
+	lit, _, _ := strings.Cut(rest, ";\n")
+	var got string
+	if err := json.Unmarshal([]byte(lit), &got); err != nil || got != bin {
+		t.Fatalf("PALATE_BIN literal %s decodes to %q (%v), want %q", lit, got, err, bin)
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; the literal check above still ran")
+	}
+	f := filepath.Join(t.TempDir(), "TaskStart.mjs")
+	if err := os.WriteFile(f, []byte(shim), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(node, "--check", f).CombinedOutput(); err != nil {
+		t.Fatalf("shim with a Windows path does not parse: %v\n%s", err, out)
+	}
+}
+
 // stubPalateScript writes a stub `palate` executable that records its stdin
 // and replies with a Claude-hook-shaped JSON payload.
 func stubPalateScript(t *testing.T, dir string) string {

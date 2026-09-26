@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,11 +68,14 @@ func clineShimPath(dir, event string) string {
 	return filepath.Join(dir, event+".mjs")
 }
 
-// GenerateClineShim renders the shim source for one event. binaryPath is
-// stamped verbatim — the installer's own resolved path, which hookBinaryPath
-// already degraded from temporary go-build paths to a stable install.
+// GenerateClineShim renders the shim source for one event. binaryPath is the
+// installer's own resolved path, which hookBinaryPath already degraded from
+// temporary go-build paths to a stable install. It is stamped as a JSON string
+// literal (valid JS): a Windows path's backslashes, or a quote in any path,
+// would otherwise break the module ("\001" is an octal escape strict ESM rejects).
 func GenerateClineShim(event, palateEvent, binaryPath string) string {
-	body := strings.ReplaceAll(clineShimTemplate, "PALATE_BIN_PLACEHOLDER", binaryPath)
+	lit, _ := json.Marshal(binaryPath) // a string always marshals
+	body := strings.ReplaceAll(clineShimTemplate, "PALATE_BIN_PLACEHOLDER", string(lit))
 	body = strings.ReplaceAll(body, "PALATE_EVENT_PLACEHOLDER", palateEvent)
 	body = strings.ReplaceAll(body, "EVENT_PLACEHOLDER", event)
 	return body
@@ -95,7 +99,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const PALATE_BIN = 'PALATE_BIN_PLACEHOLDER';
+const PALATE_BIN = PALATE_BIN_PLACEHOLDER;
 const EVENT = 'EVENT_PLACEHOLDER';
 const PALATE_EVENT = 'PALATE_EVENT_PLACEHOLDER';
 
