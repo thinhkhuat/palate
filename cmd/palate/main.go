@@ -435,6 +435,8 @@ func cmdServe() *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			// Clean up launchers that earlier sessions left stuck before exec.
+			go reapLauncherGhosts(cfg.StatePath("launcher-ghosts.log"), ghostMinAge)
 			if port != "" {
 				return mcp.ServeSSE(cfg, sseAddr(port))
 			}

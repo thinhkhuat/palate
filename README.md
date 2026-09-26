@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.5.0-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.5.1-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
@@ -40,7 +40,11 @@ codex plugin add palate@palate
 
 The plugin's `bin/palate` launcher resolves a binary itself (an existing
 install on `PATH`, or a local `go build` fallback) — you don't need the
-binary preinstalled first. Command Code, ZCode, Cline, and no-plugin setups still
+binary preinstalled first. If a launcher is ever left behind by a closed session
+without reaching the binary, the next `palate serve` stops it and records why in
+`<palate home>/state/launcher-ghosts.log` (default home `~/.claude/palate`;
+docs/decisions.md #33).
+Command Code, ZCode, Cline, and no-plugin setups still
 use `palate hook install` — see [INSTALL.md](INSTALL.md) §2.1.
 
 ## 30-second start (no plugin — manual wiring)
