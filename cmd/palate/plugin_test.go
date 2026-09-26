@@ -22,6 +22,7 @@ func TestHookHelpWarnsOnPluginDoubleFire(t *testing.T) {
 	setupTempProject(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 
 	out, err := runCLI(t, "hook", "help")
 	if err != nil {

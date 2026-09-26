@@ -56,7 +56,9 @@ func setupTempProject(t *testing.T) {
 	// Hermetic home: the durable home is derived from HOME, so point it at a
 	// throwaway dir — tests run in the default (global) mode and never touch
 	// the developer's real ~/.claude/palate.
-	t.Setenv("HOME", t.TempDir())
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // os.UserHomeDir reads this on Windows
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("db_path: .palate/palate.db\n"), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
 	}

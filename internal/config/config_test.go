@@ -58,6 +58,7 @@ func resolveIn(t *testing.T, cwd, home, palateHome, dbPath string) Config {
 	t.Helper()
 	t.Chdir(cwd)
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 	t.Setenv("PALATE_HOME", palateHome)
 	t.Setenv("PALATE_DB_PATH", dbPath)
 	cfg, err := Resolve("")
@@ -298,6 +299,7 @@ func TestDistillModeEnvAndSkipDirs(t *testing.T) {
 
 	cfg.Distill.SkipDirs = []string{"~/ref", "/opt/clones/"}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 	for cwd, want := range map[string]bool{
 		home + "/ref":                  true,
 		home + "/ref/some/repo":        true,

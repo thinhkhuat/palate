@@ -235,7 +235,8 @@ func TestClineShimResolvesTranscriptFromMetadata(t *testing.T) {
 	// transcriptFor's fallback: taskId is a session_id recorded in
 	// <dir>/<dir>.json (session_id != dirname). The shim must find it.
 	home := t.TempDir()
-	t.Setenv("HOME", home) // os.homedir() in node reads HOME on unix
+	t.Setenv("HOME", home)        // os.homedir() in node reads HOME on unix
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on Windows
 	sessDir := filepath.Join(home, ".cline", "data", "sessions", "realdir")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
 		t.Fatal(err)
@@ -350,5 +351,3 @@ func TestRemoveClineHooksAbsentDir(t *testing.T) {
 		t.Fatalf("RemoveClineHooks on absent dir = (%d, %v), want (0, nil)", removed, err)
 	}
 }
-
-

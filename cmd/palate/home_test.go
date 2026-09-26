@@ -184,7 +184,9 @@ func TestMigrateMovesLegacyStoreLosslessly(t *testing.T) {
 
 	// a second legacy store must not clobber a global store that has data
 	setupLegacyProject(t)
-	t.Setenv("HOME", filepath.Dir(filepath.Dir(global.Home))) // same global home
+	h := filepath.Dir(filepath.Dir(global.Home)) // same global home
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // os.UserHomeDir reads this on Windows
 	if _, err := runCLI(t, "prefer", "another repo's taste"); err != nil {
 		t.Fatal(err)
 	}

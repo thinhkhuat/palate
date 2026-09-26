@@ -51,6 +51,7 @@ func TestMemsearchGlobalOptIn(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Chdir(projectDir)
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir) // os.UserHomeDir reads this on Windows
 
 	writeJournal(t, filepath.Join(projectDir, ".memsearch", "memory"), "2026-09-01.md", "- a project-local note")
 	writeJournal(t, filepath.Join(homeDir, ".memsearch", "memory"), "2026-09-01.md", "- a global note from another project")

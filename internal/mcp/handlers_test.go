@@ -22,7 +22,9 @@ func memStore(t *testing.T) *sql.DB {
 	t.Helper()
 	// Hermetic home: openStore resolves the durable home from HOME/PALATE_HOME
 	// and seeds its layout; never let a test touch the developer's real one.
-	t.Setenv("HOME", t.TempDir())
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // os.UserHomeDir reads this on Windows
 	t.Setenv("PALATE_HOME", "")
 	t.Setenv("PALATE_RENDER_AUTO", "")
 	for _, k := range []string{"PALATE_LLM_ENDPOINT", "PALATE_LLM_MODEL", "PALATE_LLM_API_KEY", "PALATE_JUDGE"} {

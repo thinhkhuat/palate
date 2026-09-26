@@ -12,7 +12,9 @@ import (
 // harness configs are never touched by tests.
 func fakeHome(t *testing.T) string {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // os.UserHomeDir reads this on Windows
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
