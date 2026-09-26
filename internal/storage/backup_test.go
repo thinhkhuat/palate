@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,9 @@ func TestBackupBeforeCopiesTheDB(t *testing.T) {
 	if err != nil || string(b) != "sqlite bytes" {
 		t.Fatalf("backup content mismatch: %q %v", b, err)
 	}
-	if st, _ := os.Stat(got); st.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (Go reports 0666); privacy there is
+	// the user profile's ACL, so the mode is only checkable elsewhere.
+	if st, _ := os.Stat(got); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("backup must be 0600, got %o", st.Mode().Perm())
 	}
 	if NewestBackup(backups) != got {

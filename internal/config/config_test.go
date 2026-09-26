@@ -138,8 +138,9 @@ func TestResolveHomePrecedence(t *testing.T) {
 	})
 
 	t.Run("PALATE_DB_PATH beats the derived path", func(t *testing.T) {
-		cfg := resolveIn(t, t.TempDir(), home, t.TempDir(), "/tmp/x/explicit.db")
-		if cfg.DBPath != "/tmp/x/explicit.db" {
+		explicit := filepath.Join(t.TempDir(), "explicit.db") // absolute on every OS
+		cfg := resolveIn(t, t.TempDir(), home, t.TempDir(), explicit)
+		if cfg.DBPath != explicit {
 			t.Fatalf("DBPath=%q", cfg.DBPath)
 		}
 	})
