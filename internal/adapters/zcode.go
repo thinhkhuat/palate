@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -42,6 +43,7 @@ func GenerateZCodeHooks(binaryPath string) map[string][]HookEntry {
 	if binaryPath == "" {
 		binaryPath = "palate"
 	}
+	binaryPath = shellArg(binaryPath)
 	return map[string][]HookEntry{
 		"SessionStart": {{
 			Hooks: []Hook{{Type: "command", Command: binaryPath + " hook session-start", Timeout: 10}},
@@ -155,10 +157,90 @@ func filterPalateEntries(entries interface{}) []interface{} {
 	return out
 }
 
+// isPalateCommand reports whether a hook command is one palate wrote. It
+// matches the shape palate has always written — `<binary> hook …` or
+// `<binary> prewarm --…`, with a known hook event — on the command's binary word, so a foreign command
+// that merely mentions a path ending in /palate is never claimed (and never
+// deleted on install or uninstall). The binary word is quoted when shellArg
+// quoted it; pre-0.5.2 builds wrote it raw, spaces included, so an unquoted
+// command's binary is everything before its last ` hook ` / ` prewarm` word and
+// must hold no quote, `$` or shell operator. Its file name, lowercased with any
+// .exe dropped, must be palate or a per-platform build (palate-darwin-arm64,
+// which bin/palate can exec).
 func isPalateCommand(cmd string) bool {
-	c := strings.ToLower(cmd)
-	return strings.Contains(c, "palate hook ") || strings.Contains(c, "palate prewarm") ||
-		strings.Contains(c, "/palate ") || c == "palate"
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "palate" {
+		return true
+	}
+	if cmd == "" {
+		return false
+	}
+	var word, rest string
+	if cmd[0] == '"' || cmd[0] == '\'' {
+		word, rest = firstShellWord(cmd)
+	} else {
+		i := max(strings.LastIndex(cmd, " hook "), strings.LastIndex(cmd, " prewarm"))
+		if i < 0 {
+			return false
+		}
+		word, rest = cmd[:i], cmd[i:]
+		if strings.ContainsAny(word, "\"'$&|;<>`()") {
+			return false
+		}
+	}
+	name := strings.ToLower(word)
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	if !palateBinaryName.MatchString(strings.TrimSuffix(name, ".exe")) {
+		return false
+	}
+	args := strings.Fields(rest)
+	switch {
+	case len(args) >= 2 && args[0] == "hook":
+		return palateHookEvents[args[1]]
+	case len(args) >= 2 && args[0] == "prewarm":
+		return strings.HasPrefix(args[1], "--")
+	}
+	return false
+}
+
+// palateHookEvents are the `palate hook <event>` subcommands palate writes;
+// requiring one keeps `git -C …/palate hook run …` from being claimed.
+var palateHookEvents = map[string]bool{
+	"session-start": true, "user-prompt": true, "post-tool-use": true, "stop": true, "pre-compact": true,
+}
+
+var palateBinaryName = regexp.MustCompile(`^palate(-[a-z0-9]+-[a-z0-9_]+)?$`)
+
+// firstShellWord splits off the first word of a command: up to the first
+// blank, or — when it opens with a quote — up to the matching quote, with
+// shellArg's backslash escapes undone inside double quotes.
+func firstShellWord(s string) (word, rest string) {
+	if s == "" {
+		return "", ""
+	}
+	q := s[0]
+	if q != '"' && q != '\'' {
+		if i := strings.IndexAny(s, " \t"); i >= 0 {
+			return s[:i], s[i:]
+		}
+		return s, ""
+	}
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if q == '"' && c == '\\' && i+1 < len(s) && strings.IndexByte("\\\"`$", s[i+1]) >= 0 {
+			i++
+			b.WriteByte(s[i])
+			continue
+		}
+		if c == q {
+			return b.String(), s[i+1:]
+		}
+		b.WriteByte(c)
+	}
+	return b.String(), "" // unterminated quote: take what is there
 }
 
 // WriteZCodeHooks merges palate hooks into the workspace config <dir>/.zcode/config.json.

@@ -3,7 +3,9 @@ package adapters
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -210,5 +212,181 @@ func TestCountPalateHooksTopLevel(t *testing.T) {
 	}
 	if n := CountPalateHooksTopLevel(path); n != 0 {
 		t.Fatalf("after removal count = %d, want 0", n)
+	}
+}
+
+// A binary under a directory with a space (or a quote) must survive the shell
+// the harness runs the hook command through: the command reaches the binary
+// with the hook arguments intact, for every generator that emits commands.
+func TestHookCommandRunsFromPathWithSpace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting; Windows uses double quotes")
+	}
+	dir := filepath.Join(t.TempDir(), "My Apps", "it's here")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "palate")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"REACHED $*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commands := map[string]string{
+		"claude-code":  GenerateClaudeCodeHooks(bin).Hooks["Stop"][0].Hooks[0].Command,
+		"command-code": GenerateCommandCodeHooks(bin).Hooks["Stop"][0].Hooks[0].Command,
+		"zcode":        GenerateZCodeHooks(bin)["Stop"][0].Hooks[0].Command,
+	}
+	for name, cmd := range commands {
+		out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != "REACHED hook stop" {
+			t.Fatalf("%s: %q ran as %q (err %v)", name, cmd, out, err)
+		}
+		if !isPalateCommand(cmd) {
+			t.Fatalf("%s: palate no longer recognizes its own entry %q", name, cmd)
+		}
+	}
+	// The plugin form keeps $ live: a plugin root holding a space still expands
+	// inside the quotes and reaches the binary.
+	plugin := GenerateClaudeCodeHooks("${PALATE_TEST_ROOT}/palate").Hooks["Stop"][0].Hooks[0].Command
+	pc := exec.Command("/bin/sh", "-c", plugin)
+	pc.Env = append(os.Environ(), "PALATE_TEST_ROOT="+dir)
+	if out, err := pc.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "REACHED hook stop" {
+		t.Fatalf("plugin form %q ran as %q (err %v)", plugin, out, err)
+	}
+	// A shell-inert path stays byte-identical, so existing installs do not churn.
+	if got := GenerateClaudeCodeHooks("/usr/local/bin/palate").Hooks["Stop"][0].Hooks[0].Command; got != "/usr/local/bin/palate hook stop" {
+		t.Fatalf("inert path was rewritten: %q", got)
+	}
+}
+
+func TestIsPalateCommandQuoted(t *testing.T) {
+	for _, c := range []string{
+		"/usr/local/bin/palate hook stop",
+		`"/Users/a b/palate" hook stop`,
+		`"/Users/it\"s/pal\` + "`" + `ate/palate" hook stop`,
+		"'/Users/a b/palate' hook stop",
+		`"C:/Program Files/palate/palate.exe" hook stop`,
+		`C:\Users\me\bin\palate.exe hook stop`,
+		"C:/Users/me/bin/palate.exe hook stop",
+		"/opt/palate/bin/palate-darwin-arm64 hook session-start",
+		"palate hook session-start",
+		"/usr/local/bin/palate prewarm --scope session",
+		// Pre-0.5.2 builds wrote a spaced path unquoted; upgrades must still
+		// find (and replace) those broken entries.
+		"/Users/a b/palate hook stop",
+		`C:\Program Files\palate\palate.exe hook stop`,
+		"palate",
+	} {
+		if !isPalateCommand(c) {
+			t.Errorf("not recognized as palate: %q", c)
+		}
+	}
+	// Foreign hooks that merely mention a path ending in /palate must never be
+	// claimed — install and uninstall delete whatever this function claims.
+	for _, c := range []string{
+		"'/opt/other tool/run' hook stop",
+		"echo palate-ish",
+		"'/opt/foo/palate' --version",
+		`cat "/etc/palate" | wc`,
+		`C:\tools\palate.exe --serve`,
+		`python3 "/opt/x/palate" run`,
+		`D:\repos\palate other.bat`,
+		"echo 'a' && '/opt/palate' run-something",
+		`cd "/Users/me/src/palate" && make lint`,
+		`python3 "$HOME/tools/palate" --notify`,
+		"/usr/local/bin/palate serve",
+		"/opt/palateer hook stop",
+		"/opt/palate-wrapper.sh hook stop",
+		"git -C /Users/me/src/palate hook run pre-commit",
+		"echo see /opt/palate hook docs",
+		"/usr/local/bin/palate hook",
+		`"$HOME/x"/palate hook stop`,
+	} {
+		if isPalateCommand(c) {
+			t.Errorf("foreign command claimed as palate: %q", c)
+		}
+	}
+}
+
+// Every path shellArg can emit — on either OS — must read back as palate's.
+func TestShellArgRoundTrip(t *testing.T) {
+	cases := []struct{ goos, path, want string }{
+		{"windows", `C:\Users\me\palate.exe`, "C:/Users/me/palate.exe"},
+		{"windows", `C:\Program Files\palate\palate.exe`, `"C:/Program Files/palate/palate.exe"`},
+		{"windows", `C:\Users\RUNNER~1\Thịnh\palate.exe`, "C:/Users/RUNNER~1/Thịnh/palate.exe"},
+		{"darwin", "/usr/local/bin/palate", "/usr/local/bin/palate"},
+		{"darwin", "/Users/a b/palate", `"/Users/a b/palate"`},
+		{"linux", "/opt/it's \"odd\" `x`/palate", `"/opt/it's \"odd\" \` + "`x\\`" + `/palate"`},
+	}
+	for _, c := range cases {
+		got := shellArgFor(c.goos, c.path)
+		if got != c.want {
+			t.Errorf("shellArgFor(%s, %q) = %q, want %q", c.goos, c.path, got, c.want)
+		}
+		if !isPalateCommand(got + " hook stop") {
+			t.Errorf("palate does not recognize its own command %q", got+" hook stop")
+		}
+	}
+}
+
+// Installing over an entry an older build wrote for a spaced path (unquoted,
+// so broken) replaces it: one Stop entry afterwards, and uninstall clears it.
+func TestInstallReplacesLegacyUnquotedSpacedEntry(t *testing.T) {
+	dir := t.TempDir()
+	settings := filepath.Join(dir, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Users/a b/palate hook stop","timeout":10}]}]}}`
+	if err := os.WriteFile(settings, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteClaudeCodeHooks(dir, "/Users/a b/palate"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Hooks map[string][]HookEntry `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(cfg.Hooks["Stop"]); n != 1 || cfg.Hooks["Stop"][0].Hooks[0].Command != `"/Users/a b/palate" hook stop` {
+		t.Fatalf("want exactly the quoted Stop entry, got %d: %s", n, raw)
+	}
+	if _, err := RemoveClaudeCodeHooks(dir); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ = os.ReadFile(settings); strings.Contains(string(raw), "palate") {
+		t.Fatalf("uninstall left a palate entry: %s", raw)
+	}
+}
+
+// Every command any generator emits, for any path shape, must read back as
+// palate's — so a new hook event cannot silently fall outside the matcher.
+func TestEveryGeneratedCommandIsRecognized(t *testing.T) {
+	for _, bin := range []string{"", "/usr/local/bin/palate", "/Users/a b/palate", "${CLAUDE_PLUGIN_ROOT}/bin/palate", "/opt/palate-darwin-arm64"} {
+		var cmds []string
+		for _, entries := range GenerateClaudeCodeHooks(bin).Hooks {
+			for _, e := range entries {
+				for _, h := range e.Hooks {
+					cmds = append(cmds, h.Command)
+				}
+			}
+		}
+		for _, entries := range GenerateZCodeHooks(bin) {
+			for _, e := range entries {
+				for _, h := range e.Hooks {
+					cmds = append(cmds, h.Command)
+				}
+			}
+		}
+		for _, c := range cmds {
+			if !isPalateCommand(c) {
+				t.Errorf("generated command not recognized: %q", c)
+			}
+		}
 	}
 }

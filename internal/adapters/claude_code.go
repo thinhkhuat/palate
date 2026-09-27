@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"unicode"
 )
 
 type ClaudeCodeHooks struct {
@@ -23,10 +26,49 @@ type Hook struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
+// shellArg makes binaryPath safe as the first word of a hook command, which
+// Claude Code, Command Code and ZCode run through a shell.
+func shellArg(binaryPath string) string { return shellArgFor(runtime.GOOS, binaryPath) }
+
+// shellArgFor is shellArg for a given GOOS. A path made only of shell-inert
+// characters is returned unchanged, so existing installs keep a byte-identical
+// command; anything else — a space, a quote — is wrapped in double quotes,
+// with `\`, `"` and the backtick escaped. `$` is left live: Claude Code
+// substitutes ${CLAUDE_PLUGIN_ROOT} as text before the shell runs, but runners
+// that only export it (scripts/verify-plugin-hooks.sh) need the shell to
+// expand it. The cost is that a literal `$` in an install path expands.
+//
+// On Windows the separators are first turned into `/`: Claude Code runs hooks
+// in Git Bash, which eats bare backslashes, or — without Git Bash — in
+// PowerShell, which rejects a quoted first word followed by arguments. A
+// forward-slash path works unquoted in both; one with a space is quoted, which
+// Git Bash accepts and the PowerShell fallback cannot run (docs/decisions.md 34).
+func shellArgFor(goos, binaryPath string) string {
+	if goos == "windows" {
+		binaryPath = strings.ReplaceAll(binaryPath, `\`, "/")
+	}
+	inert := true
+	for _, r := range binaryPath {
+		// On Windows `~` (8.3 names like RUNNER~1) and non-ASCII letters (a
+		// Vietnamese profile name) are inert mid-word in Git Bash and PowerShell
+		// alike, and quoting them would cost the PowerShell fallback.
+		winInert := goos == "windows" && (r == '~' || r > 127 && unicode.IsLetter(r))
+		if !(winInert || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+:@%,=", r)) {
+			inert = false
+			break
+		}
+	}
+	if inert {
+		return binaryPath
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`").Replace(binaryPath) + `"`
+}
+
 func GenerateClaudeCodeHooks(binaryPath string) ClaudeCodeHooks {
 	if binaryPath == "" {
 		binaryPath = "palate"
 	}
+	binaryPath = shellArg(binaryPath)
 	return ClaudeCodeHooks{
 		Hooks: map[string][]HookEntry{
 			"SessionStart": {{

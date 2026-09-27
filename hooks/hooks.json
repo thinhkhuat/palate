@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook post-tool-use",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/palate\" hook post-tool-use",
             "timeout": 10
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook pre-compact",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/palate\" hook pre-compact",
             "timeout": 10
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook session-start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/palate\" hook session-start",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/palate\" hook stop",
             "timeout": 10
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/palate hook user-prompt",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/palate\" hook user-prompt",
             "timeout": 30
           }
         ]
