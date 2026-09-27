@@ -7,7 +7,23 @@ import (
 )
 
 func CommandCodeInstallHint() string {
-	return "command-code: hook-based (mirrors claude_code) — palate hook install"
+	return "command-code: hook-based (SessionStart/PostToolUse/Stop) — palate hook install"
+}
+
+// commandCodeUnknownEvents are the Claude Code event keys Command Code does
+// not accept. Its event allowlist is exactly PreToolUse, PostToolUse, Stop,
+// SessionStart (bundled reference/hooks.md "Supported events"; enforced by
+// the CLI's isHookEvent()), so a stray key is reported as
+// `unknown hook event "X" — skipped` and shows up in the TUI as a hook
+// config issue.
+//
+//   - PreCompact: no such event, and no mod equivalent — the entry is dead.
+//   - UserPromptSubmit: no such event either; Command Code serves that turn
+//     through the mod's transformInput hook instead, so writing the key both
+//     warns and does nothing.
+var commandCodeUnknownEvents = map[string]struct{}{
+	"PreCompact":       {},
+	"UserPromptSubmit": {},
 }
 
 func GenerateCommandCodeHooks(binaryPath string) ClaudeCodeHooks {
@@ -17,6 +33,9 @@ func GenerateCommandCodeHooks(binaryPath string) ClaudeCodeHooks {
 	cc := GenerateClaudeCodeHooks(binaryPath)
 	out := ClaudeCodeHooks{Hooks: map[string][]HookEntry{}}
 	for k, v := range cc.Hooks {
+		if _, unknown := commandCodeUnknownEvents[k]; unknown {
+			continue
+		}
 		out.Hooks[k] = v
 	}
 	return out
@@ -60,7 +79,10 @@ func CommandCodeGlobalSettingsPath() (string, error) {
 
 // WriteCommandCodeHooksGlobal merges palate hooks into ~/.commandcode/settings.json
 // (top-level "hooks", Claude-shaped), preserving every foreign settings key
-// and foreign hook entry. The pre-write state is backed up first
+// and foreign hook entry. Command Code events a previous install wrote but
+// this harness does not accept (PreCompact, UserPromptSubmit) are swept of
+// palate entries — the merge drops an event key once nothing palates-owned
+// survives in it. The pre-write state is backed up first
 // (.bak-palate-<timestamp>, concierge convention) and the file's permission
 // bits are preserved instead of being reset.
 func WriteCommandCodeHooksGlobal(binaryPath string) error {

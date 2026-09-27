@@ -93,7 +93,7 @@ without re-learning. Unset (the default), the feature is off.
 | Harness | What you get | How |
 |---------|-------------|-----|
 | **Claude Code** | **Learning** — hook-based (`PostToolUse` / `UserPromptSubmit` / `Stop` / `SessionStart` + `PreCompact`) | `palate hook install` |
-| **Command Code** | **Learning** — mirrors Claude Code via `~/.commandcode` | `palate hook install` |
+| **Command Code** | **Learning** — hook-based (`SessionStart` / `PostToolUse` / `Stop` via `~/.commandcode`; it has no `UserPromptSubmit`/`PreCompact` event — the per-turn surface is the mod) | `palate hook install` |
 | **ZCode** | **Learning** — hook-based (`SessionStart` / `UserPromptSubmit` / `PostToolUse` / `Stop`; strict-JSON hook output) | `palate hook install` |
 | **Cline** | **Learning** — hook-based (`TaskStart` / `TaskResume` / `UserPromptSubmit` / `PostToolUse` / `TaskComplete` / `TaskCancel` — file-hook shims in `~/.cline/hooks`; `contextModification` injection) | `palate hook install --harness cline` |
 | **OMP (oh-my-pi)** | Recall-only *(hooks unverified)* | `palate serve` (MCP) |
