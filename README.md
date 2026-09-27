@@ -2,7 +2,7 @@
 
 > **Your coding taste, learned — not configured.** Palate watches how you edit, correct, and state preferences, then injects that taste back into your AI harness so you don't have to repeat yourself. Open, local-first, harness-agnostic.
 
-[![Status](https://img.shields.io/badge/status-v0.5.1-blue)](#)
+[![Status](https://img.shields.io/badge/status-v0.5.2-blue)](#)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](#)
 [![No CGO](https://img.shields.io/badge/CGO-free-brightgreen)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#)
