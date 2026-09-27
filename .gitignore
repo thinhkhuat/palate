@@ -17,3 +17,9 @@ dist/
 command-code-session-*.md
 package-lock.json
 __pycache__/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Reticle (web-app verifier) per-machine state — palate is a CLI; nothing to commit.
+/.reticle/
