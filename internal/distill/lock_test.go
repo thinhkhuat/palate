@@ -119,6 +119,38 @@ func TestLearnLockConcurrentStaleTakeover(t *testing.T) {
 	releases[0]()
 }
 
+// TestTouchLock proves a held lock's mtime advances to now, so a multi-batch
+// dream pass that runs past learnLockStaleAfter is never mistaken for an
+// orphaned holder mid-pass (phase-04 req 3).
+func TestTouchLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "learn.lock")
+	release, ok := AcquireLearnLock(path)
+	if !ok {
+		t.Fatal("acquire failed")
+	}
+	defer release()
+
+	old := time.Now().Add(-learnLockStaleAfter - time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := TouchLock(path); err != nil {
+		t.Fatalf("TouchLock: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if time.Since(info.ModTime()) >= learnLockStaleAfter {
+		t.Fatalf("TouchLock did not refresh mtime: age %v", time.Since(info.ModTime()))
+	}
+
+	// A contender must still see the lock as fresh (not stale) right after.
+	if _, ok := AcquireLearnLock(path); ok {
+		t.Fatal("a lock just touched must not be taken over as stale")
+	}
+}
+
 // A fresh lock must stay on disk without interruption while contenders
 // probe it: a live holder never sees its lock file vanish.
 func TestLearnLockFreshLockNeverLeavesDisk(t *testing.T) {

@@ -98,6 +98,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cmdServe())
 	root.AddCommand(cmdStats())
 	root.AddCommand(cmdForget())
+	root.AddCommand(cmdRestore())
 	root.AddCommand(cmdExport())
 	root.AddCommand(cmdLint())
 	root.AddCommand(cmdReimport())
@@ -106,6 +107,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cmdTaste())
 	root.AddCommand(cmdMigrate())
 	root.AddCommand(cmdConsolidate())
+	root.AddCommand(cmdDream())
 	root.AddCommand(cmdVerify())
 	root.AddCommand(cmdHook())
 	root.AddCommand(cmdPrefer())
@@ -335,13 +337,20 @@ func cmdRecall() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			markRecallProfile(db, cfg, results)
 			if jsonOut {
 				b, _ := json.MarshalIndent(results, "", "  ")
 				fmt.Println(string(b))
 				return nil
 			}
 			for _, r := range results {
-				fmt.Printf("[%s] %s (%.3f) id=%s\n", r.Table, r.Content, r.Score, r.ID)
+				marker := ""
+				if r.Table == "preferences" && r.InProfile {
+					marker = " [profile]"
+				}
+				// The marker sits before "id=" so extractID-style parsing
+				// (find "id=", read to end of line) never picks it up.
+				fmt.Printf("[%s] %s (%.3f)%s id=%s\n", r.Table, r.Content, r.Score, marker, r.ID)
 			}
 			return nil
 		},
@@ -351,6 +360,36 @@ func cmdRecall() *cobra.Command {
 	c.Flags().BoolVar(&includeConflicted, "include-conflicted", false, "include conflicted prefs")
 	c.Flags().StringVar(&asOf, "as-of", "", "RFC3339 instant to pin decay (replay determinism)")
 	return c
+}
+
+// markRecallProfile sets InProfile on every preferences result, computed
+// with the same learn.SelectProfile the SessionStart block uses (phase-02
+// req 14) — recall keeps searching the whole live ledger; this only marks
+// which of the hits also made the budgeted profile.
+func markRecallProfile(db *sql.DB, cfg config.Config, results []storage.RecallResult) {
+	needsMark := false
+	for _, r := range results {
+		if r.Table == "preferences" {
+			needsMark = true
+			break
+		}
+	}
+	if !needsMark {
+		return
+	}
+	profile, err := learn.SelectProfile(db, cfg, render.ProfileBudget(cfg))
+	if err != nil {
+		return
+	}
+	inProfile := make(map[string]bool, len(profile.In))
+	for _, p := range profile.In {
+		inProfile[p.ID] = true
+	}
+	for i := range results {
+		if results[i].Table == "preferences" {
+			results[i].InProfile = inProfile[results[i].ID]
+		}
+	}
 }
 
 func cmdPrewarm() *cobra.Command {
@@ -404,15 +443,14 @@ func cmdSleep() *cobra.Command {
 				// another learn/consolidate process.
 				if _, _, due := consolidate.Due(db, cfg); due {
 					if release, locked := distill.AcquireLearnLock(learnLockPath(cfg)); locked {
-						if gw, ok := distill.NewGatewayFromEnv(cfg); ok {
-							if rep, cerr := consolidate.Run(cmd.Context(), db, cfg, gw); cerr != nil {
-								fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
-							} else {
-								fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
-							}
+						if rep, cerr := runConsolidatePass(cmd.Context(), cfg, db, "sleep", consolidate.RunOptions{}, nil); cerr != nil {
+							fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
+						} else {
+							fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
 						}
 						release()
 					} else {
+						recordSkippedLock(cfg, db, "sleep")
 						fmt.Fprintln(os.Stderr, "sleep: consolidation skipped — another learn/consolidate pass holds the lock")
 					}
 				}
@@ -488,23 +526,62 @@ func cmdStats() *cobra.Command {
 }
 
 func cmdForget() *cobra.Command {
-	return &cobra.Command{
+	var purge bool
+	c := &cobra.Command{
 		Use:   "forget [id]",
-		Short: "Forget by id",
+		Short: "Forget by id (soft for a preference: restorable with `palate restore`; --purge deletes it for good)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "forget"); err != nil {
-				return fmt.Errorf("backup before forget: %w", err)
+			label := "forget"
+			if purge {
+				label = "purge"
+			}
+			if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), label); err != nil {
+				return fmt.Errorf("backup before %s: %w", label, err)
 			} else if bak != "" {
 				fmt.Fprintln(os.Stderr, "backup:", bak)
+			}
+			if purge {
+				if err := storage.Purge(db, args[0]); err != nil {
+					return err
+				}
+				fmt.Println("purged", args[0])
+				return nil
 			}
 			if err := storage.Forget(db, args[0]); err != nil {
 				return err
 			}
 			fmt.Println("forgot", args[0])
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&purge, "purge", false, "hard-delete a preference instead of the default soft (restorable) forget")
+	return c
+}
+
+// cmdRestore reverses a soft forget/retire, or promotes a live candidate that
+// fell out of the profile back to STATED (phase-02 req 11).
+func cmdRestore() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore [id]",
+		Short: "Restore a retired preference, or promote a candidate that fell out of the profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			db := openDB(cfg)
+			defer storage.Close()
+			if bak, err := storage.BackupBefore(cfg.DBPath, cfg.BackupDir(), "restore"); err != nil {
+				return fmt.Errorf("backup before restore: %w", err)
+			} else if bak != "" {
+				fmt.Fprintln(os.Stderr, "backup:", bak)
+			}
+			if _, err := learn.Restore(db, args[0]); err != nil {
+				return err
+			}
+			fmt.Println("restored", args[0])
 			return nil
 		},
 	}
@@ -595,7 +672,7 @@ func cmdPush() *cobra.Command {
 			db := openDB(cfg)
 			defer storage.Close()
 			path := "TASTE.md"
-			if err := render.WriteFile(db, path, render.RenderOptions{}); err != nil {
+			if err := render.WriteFile(db, cfg, path); err != nil {
 				return err
 			}
 			fmt.Printf("TASTE.md rendered from DB (lossy artifact, events is truth). Next: git add %s && git commit -m 'palate: update TASTE.md' && git push\n", path)
@@ -607,8 +684,13 @@ func cmdPush() *cobra.Command {
 // cmdTaste re-syncs the auto-maintained TASTE.md from the DB (a DB restored
 // or edited outside Palate leaves the render stale — nothing marked it
 // dirty) and prints it. The slash command /palate:taste calls this.
+//
+// --accept-edits and plain `taste` on a pending hold resolve it first
+// (accepting stores the held additions/deletions, plain discards them) and
+// remove the stale on-disk file so the Sync right after starts clean instead
+// of re-detecting the very edit that was just resolved.
 func cmdTaste() *cobra.Command {
-	var pathOnly bool
+	var pathOnly, cut, acceptEdits bool
 	c := &cobra.Command{
 		Use:   "taste",
 		Short: "Re-sync and print the auto-maintained TASTE.md",
@@ -616,8 +698,22 @@ func cmdTaste() *cobra.Command {
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
-			if _, err := render.Sync(db, cfg.TastePath(), render.RenderOptions{}); err != nil {
+			if acceptEdits {
+				if err := render.AcceptHeldEdits(db, cfg); err != nil {
+					return err
+				}
+			} else if render.HoldPending(cfg) {
+				if err := render.DiscardHold(cfg); err != nil {
+					return err
+				}
+			} else if err := render.ReadBack(db, cfg, cfg.TastePath()); err != nil {
 				return err
+			}
+			if _, err := render.Sync(db, cfg, cfg.TastePath()); err != nil {
+				return err
+			}
+			if cut {
+				return printProfileCut(db, cfg)
 			}
 			if pathOnly {
 				fmt.Println(cfg.TastePath())
@@ -632,7 +728,64 @@ func cmdTaste() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&pathOnly, "path", false, "print only the file path")
+	c.Flags().BoolVar(&cut, "cut", false, "list every live row excluded from the profile, with its id and reason")
+	c.Flags().BoolVar(&acceptEdits, "accept-edits", false, "apply a held hand-edit (mass deletion, agent edit, or unverifiable base) that read-back could not apply safely on its own")
 	return c
+}
+
+// printProfileCut implements `palate taste --cut`: id + reason for every live
+// row SelectProfile left out, ranked the same way SelectProfile itself would
+// (STATED first, sessions desc, confidence desc, id asc) — an approximation
+// of its exact tie-break chain built from the same exported reads, since the
+// full ranked candidate list is private to learn.SelectProfile.
+func printProfileCut(db *sql.DB, cfg config.Config) error {
+	profile, err := learn.SelectProfile(db, cfg, render.ProfileBudget(cfg))
+	if err != nil {
+		return err
+	}
+	if len(profile.Excluded) == 0 {
+		fmt.Println("taste --cut: every live row is in the profile")
+		return nil
+	}
+	prefs, err := learn.ListPreferences(db, true)
+	if err != nil {
+		return err
+	}
+	sessions, err := learn.SessionCounts(db)
+	if err != nil {
+		return err
+	}
+	type cutRow struct {
+		id, reason string
+		stated     bool
+		sessions   int
+		confidence float64
+	}
+	var rows []cutRow
+	for _, p := range prefs {
+		reason, ok := profile.Excluded[p.ID]
+		if !ok {
+			continue
+		}
+		rows = append(rows, cutRow{id: p.ID, reason: reason, stated: p.TrustTier == "STATED", sessions: sessions[p.ID], confidence: p.Confidence})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.stated != b.stated {
+			return a.stated
+		}
+		if a.sessions != b.sessions {
+			return a.sessions > b.sessions
+		}
+		if a.confidence != b.confidence {
+			return a.confidence > b.confidence
+		}
+		return a.id < b.id
+	})
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\n", r.id, r.reason)
+	}
+	return nil
 }
 
 // cmdMigrate moves a legacy per-repo store (./.palate/) into the global home
@@ -680,7 +833,7 @@ func cmdMigrate() *cobra.Command {
 				return err
 			}
 			defer storage.Close()
-			if _, err := render.Sync(db, global.TastePath(), render.RenderOptions{}); err != nil {
+			if _, err := render.Sync(db, global, global.TastePath()); err != nil {
 				return err
 			}
 			fmt.Printf("migrated %s -> %s (events, tiers and confidences intact)\n", legacy.DBPath, global.DBPath)
@@ -732,6 +885,7 @@ func cmdConsolidate() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			retireVerbatim, _ := cmd.Flags().GetBool("retire-verbatim")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			rebuild, _ := cmd.Flags().GetBool("rebuild")
 			if retireVerbatim {
 				cfg := loadConfig()
 				db := openDB(cfg)
@@ -757,19 +911,19 @@ func cmdConsolidate() *cobra.Command {
 				return nil
 			}
 			cfg := loadConfig()
-			gw, ok := distill.NewGatewayFromEnv(cfg)
-			if !ok {
+			if !cfg.LLMConfigured() {
 				return fmt.Errorf("consolidate: no LLM gateway configured (PALATE_LLM_ENDPOINT/PALATE_LLM_MODEL)")
 			}
+			db := openDB(cfg)
+			defer storage.Close()
 			release, locked := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !locked {
+				recordSkippedLock(cfg, db, "manual")
 				fmt.Fprintln(os.Stderr, "consolidate: another learn/consolidate pass holds the lock; skipping")
 				return nil
 			}
 			defer release()
-			db := openDB(cfg)
-			defer storage.Close()
-			rep, err := consolidate.Run(cmd.Context(), db, cfg, gw)
+			rep, err := runConsolidatePass(cmd.Context(), cfg, db, "manual", consolidate.RunOptions{Rebuild: rebuild}, nil)
 			if err != nil {
 				return err
 			}
@@ -780,7 +934,88 @@ func cmdConsolidate() *cobra.Command {
 	}
 	c.Flags().Bool("retire-verbatim", false, "retire live verbatim work-product rows without a gateway (backup first)")
 	c.Flags().Bool("dry-run", false, "with --retire-verbatim: count matches without retiring")
+	c.Flags().Bool("rebuild", false, "review every live row (not just the delta), with no 40% guard — one supervised invocation")
 	return c
+}
+
+// cmdDream is a thin alias for `palate consolidate` (the owner's word for the
+// dream pass, red-team Q2): same flags, same runConsolidatePass underneath.
+func cmdDream() *cobra.Command {
+	c := cmdConsolidate()
+	c.Use = "dream"
+	c.Short = "Alias for `palate consolidate` — the dream pass"
+	return c
+}
+
+// runConsolidatePass is the one shared runner behind `palate consolidate`,
+// its `palate dream` alias, `palate sleep`, and `learn session
+// --then-consolidate` (req 11): it builds the consolidate gateway (its own,
+// longer timeout — req 10), runs one pass, prints the outcome and records the
+// attempt (req 8). The caller must already hold learn.lock; this never
+// acquires or releases it. learnErr, when non-nil, is a prior LearnSession
+// failure from the same invocation (req 10a) — folded into the recorded
+// attempt's Error alongside any error this pass itself hits.
+func runConsolidatePass(ctx context.Context, cfg config.Config, db *sql.DB, trigger string, opts consolidate.RunOptions, learnErr error) (consolidate.Report, error) {
+	start := time.Now()
+	opts.Trigger = trigger
+	opts.OnBatch = func() { _ = distill.TouchLock(learnLockPath(cfg)) }
+
+	gw, ok := consolidate.BuildGateway(cfg)
+	if !ok {
+		err := fmt.Errorf("consolidate: no LLM gateway configured (PALATE_LLM_ENDPOINT/PALATE_LLM_MODEL)")
+		recordAttempt(cfg, db, trigger, consolidate.Report{Outcome: "error"}, combineErrors(learnErr, err), start)
+		return consolidate.Report{}, err
+	}
+	rep, err := consolidate.Run(ctx, db, cfg, gw, opts)
+	recordAttempt(cfg, db, trigger, rep, combineErrors(learnErr, err), start)
+	return rep, err
+}
+
+// recordAttempt writes one consolidate.log line for a completed
+// runConsolidatePass call (req 8). Best-effort: a logging failure must never
+// mask the pass's own result.
+func recordAttempt(cfg config.Config, db *sql.DB, trigger string, rep consolidate.Report, combinedErr error, start time.Time) {
+	outcome := rep.Outcome
+	if outcome == "" {
+		outcome = "error"
+	}
+	errStr := ""
+	if combinedErr != nil {
+		errStr = combinedErr.Error()
+	}
+	_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
+		Trigger:    trigger,
+		Outcome:    outcome,
+		Batches:    rep.Batches,
+		Actions:    rep.Actions,
+		Retired:    rep.Retired,
+		Error:      errStr,
+		DurationMS: time.Since(start).Milliseconds(),
+		EventID:    consolidate.MaxEventID(db),
+	})
+}
+
+// recordSkippedLock records a busy-lock attempt (req 10a): no pass ran at
+// all, so there is nothing else to report beyond the outcome itself.
+func recordSkippedLock(cfg config.Config, db *sql.DB, trigger string) {
+	_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
+		Trigger: trigger,
+		Outcome: "skipped-lock",
+		EventID: consolidate.MaxEventID(db),
+	})
+}
+
+// combineErrors folds a prior learn error and this pass's own error into one
+// message for the attempt log, without losing either half.
+func combineErrors(learnErr, passErr error) error {
+	switch {
+	case learnErr == nil:
+		return passErr
+	case passErr == nil:
+		return fmt.Errorf("learn: %w", learnErr)
+	default:
+		return fmt.Errorf("learn: %v; consolidate: %w", learnErr, passErr)
+	}
 }
 
 func cmdPull() *cobra.Command {
@@ -1039,16 +1274,26 @@ func cmdHook() *cobra.Command {
 				return nil
 			}
 			defer storage.Close()
-			handleStateWalkUserDiffs(db, cfg)
-			if cfg.LLMConfigured() && input.TranscriptPath != "" && cfg.LearningOn() && !cfg.LearningSkipped(input.CWD) {
-				// Detached, fire-and-forget: this must never make the hook
-				// wait on the distiller's LLM call.
-				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
+			// Read back the owner's hand edits before the profile or notice is
+			// built, so the model sees them in the same session (req 6).
+			if err := render.ReadBack(db, cfg, cfg.TastePath()); err != nil {
+				fmt.Fprintf(os.Stderr, "palate: read-back TASTE.md: %v\n", err)
 			}
+			handleStateWalkUserDiffs(db, cfg)
+			// SessionStart spawns exactly one detached child (phase-04 req 9,
+			// red-team F4): a transcript with learning on carries the due
+			// pass along in the same process (`--then-consolidate`), under
+			// the lock it already holds, so the old two-spawn race for
+			// learn.lock is gone by construction; with no transcript, a due
+			// pass still fires alone.
 			if cfg.LLMConfigured() {
-				// Same rule for the whole-profile review: only past the
-				// watermark, never in-line.
-				if _, _, due := consolidate.Due(db, cfg); due {
+				_, _, due := consolidate.Due(db, cfg)
+				switch {
+				case input.TranscriptPath != "" && cfg.LearningOn() && !cfg.LearningSkipped(input.CWD):
+					// Detached, fire-and-forget: this must never make the
+					// hook wait on the distiller's (or the pass's) LLM call.
+					_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath, due)
+				case due:
 					_ = spawnConsolidate(hookBinaryPath())
 				}
 			}
@@ -1090,6 +1335,11 @@ func cmdHook() *cobra.Command {
 				Prompt string `json:"prompt"`
 			}
 			_ = json.NewDecoder(os.Stdin).Decode(&input)
+			// Read back the owner's hand edits before the profile or notice is
+			// built, so the model sees them in the same session (req 6).
+			if err := render.ReadBack(db, cfg, cfg.TastePath()); err != nil {
+				fmt.Fprintf(os.Stderr, "palate: read-back TASTE.md: %v\n", err)
+			}
 			// The user just handed the turn back: anything that drifted from
 			// the Stop-time snapshot since then is a hand-edit — learn it now.
 			handleStateWalkUserDiffs(db, cfg)
@@ -1220,8 +1470,9 @@ func cmdHook() *cobra.Command {
 			_ = saveModelEdits(statePath, modelEdits)
 			if cfg.LLMConfigured() && input.TranscriptPath != "" && cfg.LearningOn() && !cfg.LearningSkipped(input.CWD) {
 				// Detached, fire-and-forget: this must never make the hook
-				// wait on the distiller's LLM call.
-				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath)
+				// wait on the distiller's LLM call. Learn only — the dream
+				// pass never rides along on Stop (req 9).
+				_ = spawnLearnSession(hookBinaryPath(), input.TranscriptPath, false)
 			}
 			return nil
 		},
@@ -1706,7 +1957,7 @@ func learnLockPath(cfg config.Config) string {
 
 func cmdLearnSession() *cobra.Command {
 	var harness string
-	var verbose bool
+	var verbose, thenConsolidate bool
 	c := &cobra.Command{
 		Use:          "session <path>",
 		Short:        "Learn preferences from one transcript",
@@ -1740,6 +1991,14 @@ func cmdLearnSession() *cobra.Command {
 			defer storage.Close()
 			release, ok := distill.AcquireLearnLock(learnLockPath(cfg))
 			if !ok {
+				// Every learner that skips on a busy lock is visible, never
+				// silent (red-team M8): the counter always bumps; the
+				// then-consolidate caller (the SessionStart spawn) also
+				// records the attempt log line req 10a asks for.
+				storage.BumpDrop(db, "learn_skipped_lock")
+				if thenConsolidate {
+					recordSkippedLock(cfg, db, "session-start")
+				}
 				if verbose {
 					fmt.Println("palate: learn already in progress — skipping")
 				}
@@ -1748,19 +2007,41 @@ func cmdLearnSession() *cobra.Command {
 			defer release()
 			gw, _ := distill.NewGatewayFromEnv(cfg)
 
-			summary, err := distill.LearnSession(context.Background(), db, cfg, gw, reader, distill.Transcript{Harness: h, Path: path})
-			if err != nil {
-				return err
+			summary, learnErr := distill.LearnSession(context.Background(), db, cfg, gw, reader, distill.Transcript{Harness: h, Path: path})
+			if !thenConsolidate {
+				if learnErr != nil {
+					return learnErr
+				}
+				printLearnOutcome(summary)
+				if verbose {
+					fmt.Println("gateway model:", cfg.LLM.Model)
+				}
+				return learnFailure(summary)
 			}
-			printLearnOutcome(summary)
-			if verbose {
-				fmt.Println("gateway model:", cfg.LLM.Model)
+
+			// --then-consolidate: a learn error never blocks the due pass
+			// (req 10a) — it still runs, under the lock this process already
+			// holds, and the learn error rides into the attempt's Error.
+			if learnErr == nil {
+				printLearnOutcome(summary)
+				if verbose {
+					fmt.Println("gateway model:", cfg.LLM.Model)
+				}
+			}
+			if _, _, due := consolidate.Due(db, cfg); due {
+				if _, cerr := runConsolidatePass(cmd.Context(), cfg, db, "session-start", consolidate.RunOptions{}, learnErr); cerr != nil {
+					fmt.Fprintln(os.Stderr, "palate: consolidate:", cerr)
+				}
+			}
+			if learnErr != nil {
+				return learnErr
 			}
 			return learnFailure(summary)
 		},
 	}
 	c.Flags().StringVar(&harness, "harness", "", "harness override: claude_code|command_code|cline|pi|codex|opencode|gemini_cli|memsearch|zcode")
 	c.Flags().BoolVar(&verbose, "verbose", false, "print the gateway model")
+	c.Flags().BoolVar(&thenConsolidate, "then-consolidate", false, "after learning, run the due dream pass in this same process (holds learn.lock throughout)")
 	return c
 }
 

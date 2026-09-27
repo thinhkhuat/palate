@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,6 +40,48 @@ func TestBackupBeforeCopiesTheDB(t *testing.T) {
 	missing, err := BackupBefore(filepath.Join(dir, "absent.db"), backups, "pull")
 	if err != nil || missing != "" {
 		t.Fatalf("missing DB must be a no-op: %q %v", missing, err)
+	}
+}
+
+// TestBackupIncludesUncheckpointedWrite: a write an open connection has
+// committed but not checkpointed still lands in the -wal file, not the main
+// DB file. BackupBefore must see it anyway (red-team M1) — VACUUM INTO reads
+// through the WAL the way any other connection to the same path would,
+// unlike a raw byte copy of the main file alone.
+func TestBackupIncludesUncheckpointedWrite(t *testing.T) {
+	Close()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "palate.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(Close)
+	if _, err := db.Exec(`INSERT INTO preferences(id, category, statement) VALUES('p1','General','Prefers table-driven tests')`); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	var before int
+	if err := db.QueryRow(`SELECT count(*) FROM preferences`).Scan(&before); err != nil || before != 1 {
+		t.Fatalf("seed row missing before backup: n=%d err=%v", before, err)
+	}
+
+	backups := filepath.Join(dir, "backups")
+	got, err := BackupBefore(dbPath, backups, "wal-check")
+	if err != nil || got == "" {
+		t.Fatalf("BackupBefore: got=%q err=%v", got, err)
+	}
+
+	backupConn, err := sql.Open("sqlite", got)
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupConn.Close()
+	var after int
+	if err := backupConn.QueryRow(`SELECT count(*) FROM preferences`).Scan(&after); err != nil {
+		t.Fatalf("query backup: %v", err)
+	}
+	if after != before {
+		t.Fatalf("backup row count = %d, want %d (the open connection's write must not be lost)", after, before)
 	}
 }
 

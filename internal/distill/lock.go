@@ -60,3 +60,11 @@ func AcquireLearnLock(path string) (release func(), ok bool) {
 	_ = os.Remove(takenPath)
 	return func() { _ = os.Remove(path) }, true
 }
+
+// TouchLock refreshes a held lock's mtime to now, so a multi-batch dream
+// pass that runs past learnLockStaleAfter is never mistaken for an orphaned,
+// crashed holder by a concurrent stale-takeover attempt.
+func TouchLock(path string) error {
+	now := time.Now()
+	return os.Chtimes(path, now, now)
+}

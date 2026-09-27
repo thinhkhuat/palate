@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -324,32 +325,71 @@ func AppendEvent(conn *sql.DB, eventType, payload string) error {
 // ahead of a destructive verb (forget, pull). A missing DB is not an error —
 // there is nothing to protect yet. Returns the backup path ("" when skipped).
 func BackupBefore(dbPath, backupDir, label string) (string, error) {
-	src, err := os.Open(dbPath)
-	if err != nil {
+	if _, err := os.Stat(dbPath); err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", err
 	}
-	defer src.Close()
 	if err := os.MkdirAll(backupDir, 0700); err != nil {
 		return "", err
 	}
 	dst := filepath.Join(backupDir, fmt.Sprintf("%s-%s-%s", filepath.Base(dbPath), time.Now().Format("20060102-1504"), label))
 	// Minute-stamped: a second call in the same minute (a loop of forget /
 	// promote) must keep the FIRST snapshot — that is the state to restore.
+	if _, err := os.Stat(dst); err == nil {
+		return dst, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := vacuumBackup(dbPath, dst); err != nil {
+		// Not a valid SQLite file at dbPath (a test fixture, a genuinely
+		// corrupt store) — a raw copy we can still restore beats no backup
+		// at all, so fall back instead of failing the caller's destructive
+		// verb outright.
+		if cerr := rawCopyBackup(dbPath, dst); cerr != nil {
+			return "", cerr
+		}
+	}
+	return dst, os.Chmod(dst, 0600)
+}
+
+// vacuumBackup runs `VACUUM INTO` through a fresh, short-lived connection to
+// dbPath (red-team M1). Unlike a raw byte copy of the main DB file, VACUUM
+// INTO reads through the WAL like any other connection, so a commit an open
+// writer (the long-lived MCP `serve` process) has not yet checkpointed is
+// still in the snapshot. dst must not already exist — VACUUM INTO refuses to
+// overwrite a file.
+func vacuumBackup(dbPath, dst string) error {
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", dbPath)
+	conn, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	q := "VACUUM INTO '" + strings.ReplaceAll(dst, "'", "''") + "'"
+	_, err = conn.Exec(q)
+	return err
+}
+
+func rawCopyBackup(dbPath, dst string) error {
+	src, err := os.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		if os.IsExist(err) {
-			return dst, nil
+			return nil
 		}
-		return "", err
+		return err
 	}
 	if _, err := io.Copy(out, src); err != nil {
 		out.Close()
-		return "", err
+		return err
 	}
-	return dst, out.Close()
+	return out.Close()
 }
 
 // NewestBackup returns the most recently modified file in backupDir, or "".

@@ -115,7 +115,7 @@ func gateExplicit(s string) *mcp.CallToolResult {
 }
 
 func handleRecall(ctx context.Context, req *mcp.CallToolRequest, in RecallInput) (*mcp.CallToolResult, interface{}, error) {
-	_, db, fail := openStore()
+	cfg, db, fail := openStore()
 	if fail != nil {
 		return fail, nil, nil
 	}
@@ -123,11 +123,46 @@ func handleRecall(ctx context.Context, req *mcp.CallToolRequest, in RecallInput)
 	if len(results) == 0 {
 		return textResult("no results"), nil, nil
 	}
+	markProfileMembers(db, cfg, results)
 	var lines []string
 	for _, r := range results {
-		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f) id=%s", r.Table, r.Content, r.Score, r.ID))
+		marker := ""
+		if r.Table == "preferences" && r.InProfile {
+			marker = " [profile]"
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)%s id=%s", r.Table, r.Content, r.Score, marker, r.ID))
 	}
 	return textResult(strings.Join(lines, "\n")), nil, nil
+}
+
+// markProfileMembers sets InProfile on every preference among results,
+// computed with the same learn.SelectProfile the SessionStart block uses
+// (phase-02 req 14) — palate_recall keeps searching the whole live ledger;
+// this only annotates which of the hits also made the budgeted profile.
+func markProfileMembers(db *sql.DB, cfg config.Config, results []storage.RecallResult) {
+	needsMark := false
+	for _, r := range results {
+		if r.Table == "preferences" {
+			needsMark = true
+			break
+		}
+	}
+	if !needsMark {
+		return
+	}
+	profile, err := learn.SelectProfile(db, cfg, render.ProfileBudget(cfg))
+	if err != nil {
+		return
+	}
+	inProfile := make(map[string]bool, len(profile.In))
+	for _, p := range profile.In {
+		inProfile[p.ID] = true
+	}
+	for i := range results {
+		if results[i].Table == "preferences" {
+			results[i].InProfile = inProfile[results[i].ID]
+		}
+	}
 }
 
 func handleRemember(ctx context.Context, req *mcp.CallToolRequest, in RememberInput) (*mcp.CallToolResult, interface{}, error) {

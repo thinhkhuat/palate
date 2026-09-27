@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -27,115 +28,259 @@ func RegisterAuto(cfg config.Config) {
 		return
 	}
 	storage.SetOnDirtyFlush(func(db *sql.DB) {
-		if _, err := Sync(db, cfg.TastePath(), RenderOptions{}); err != nil {
+		if _, err := Sync(db, cfg, cfg.TastePath()); err != nil {
 			fmt.Fprintf(os.Stderr, "palate: auto-render TASTE.md: %v\n", err)
 		}
 	})
 }
 
-type RenderOptions struct {
-	IncludeConflicted bool
+// RenderOptions is kept for API stability across the render/prewarm call
+// sites; it carries no fields. The old IncludeConflicted toggle is gone —
+// SelectProfile always excludes the strictly-lower-confidence side of an
+// open conflict (learn/profile.go conflictLosers), so there is nothing left
+// for a caller to override.
+type RenderOptions struct{}
+
+// tasteMarker is the boundary between the header comment and the profile
+// body in both TASTE.md and the value state/TASTE.base.md stores. Body
+// content (learn.BulletLine output) never starts a line with "# ", so a
+// hand-typed line can't be mistaken for it.
+const tasteMarker = "# Taste\n\n"
+
+// tasteHeaderTemplate is the HTML-comment header line. %d is the highest
+// event id at render time (no timestamp churn: an unchanged DB renders
+// byte-identical); %s is the first 12 hex characters of sha256(body) — the
+// contract ReadBack uses to tell "untouched" from "hand-edited" bytes.
+const tasteHeaderTemplate = "<!-- auto-maintained by palate after event #%d; sha256=%s; edit freely: added or reworded lines become your stated taste, deleted lines are forgotten (restorable with `palate restore`) -->\n" + tasteMarker
+
+// shaDigits is the fixed width of the sha256 prefix TASTE.md's header
+// carries — always exactly this many hex characters, never estimated.
+const shaDigits = 12
+
+// tasteHeader renders the header line for lastEvent and sha (already the
+// first shaDigits hex characters of sha256(body)).
+func tasteHeader(lastEvent int64, sha string) string {
+	return fmt.Sprintf(tasteHeaderTemplate, lastEvent, sha)
 }
 
-// Render produces the human-readable profile. The header carries the id of
-// the last event so an unchanged DB renders byte-identical (no timestamp
-// churn). Bullets are command-code shaped — "- statement. Confidence: 0.xx"
-// with no internal metadata suffix: what the user reviews is exactly what the
-// agent gets, and the agent never spends tokens on (source, TRUST_TIER).
-// Provenance stays queryable via `palate recall -v` and the DB itself.
-// Reimport and Lint ignore everything after "Confidence:".
-func Render(conn *sql.DB, opts RenderOptions) (string, error) {
+// tasteHeaderOverheadEventIDDigits is the worst-case event-id width used only
+// to size the header's overhead, never to render it (req 1: "a fixed
+// worst-case width ... for the event id"). 12 digits comfortably outlives
+// any store this tool will ever see.
+const tasteHeaderOverheadEventIDDigits = 999999999999
+
+// TasteHeaderOverhead is TASTE.md's own header cost in estimated tokens,
+// computed at a fixed worst-case width for the event id and the sha so the
+// profile budget never depends on the selection's own output (req 1, L3).
+func TasteHeaderOverhead(cfg config.Config) int {
+	return learn.EstimateTokens(tasteHeader(tasteHeaderOverheadEventIDDigits, strings.Repeat("f", shaDigits)))
+}
+
+func bodySha(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("%x", sum)[:shaDigits]
+}
+
+// extractBody strips the header comment and the "# Taste" line from a
+// rendered TASTE.md, leaving the category/bullet body — the same bytes
+// state/TASTE.base.md stores and SessionPrewarm injects. A file with no
+// "# Taste" marker at all (a badly mangled hand edit) returns its full
+// content unchanged, so a bullet-level diff still has something to compare.
+func extractBody(content string) string {
+	if idx := strings.Index(content, tasteMarker); idx >= 0 {
+		return content[idx+len(tasteMarker):]
+	}
+	return content
+}
+
+var headerShaRe = regexp.MustCompile(`sha256=([0-9a-f]{12})`)
+
+// parseHeaderSha reads the sha256=<hex> field from content's header line,
+// only looking before "# Taste" so a hand-typed bullet that happens to
+// contain the string "sha256=" can never be mistaken for the header's own.
+func parseHeaderSha(content string) (sha string, ok bool) {
+	head := content
+	if idx := strings.Index(content, tasteMarker); idx >= 0 {
+		head = content[:idx]
+	}
+	m := headerShaRe.FindStringSubmatch(head)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// Render produces the human-readable profile: the header (event id + sha)
+// followed by Body's category/bullet text. n==0 still carries a header (a
+// consistent sha over the empty body), so ReadBack's contract never needs a
+// special case for an empty store.
+func Render(conn *sql.DB, cfg config.Config, opts RenderOptions) (string, error) {
 	var lastEvent int64
 	_ = conn.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&lastEvent)
-	body, n, err := Body(conn, opts)
+	body, n, err := Body(conn, cfg, opts)
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("<!-- auto-maintained by palate after event #%d; edit with `palate prefer` / `palate forget`, not by hand -->\n", lastEvent))
-	b.WriteString("# Taste\n\n")
 	if n == 0 {
-		b.WriteString("_No preferences learned yet._\n")
-		return b.String(), nil
+		// The sha must cover exactly the text that follows the header — the
+		// placeholder line included — so ReadBack's "does the header still
+		// match its own body" check holds for an empty profile too.
+		body = "_No preferences learned yet._\n"
 	}
-	b.WriteString(body)
-	return b.String(), nil
+	return tasteHeader(lastEvent, bodySha(body)) + body, nil
 }
 
-// Body is the profile without the header: "## Category" sections, one
-// "- statement. Confidence: 0.xx" bullet per preference. It is the same bytes
-// TASTE.md carries and the same bytes the SessionStart prewarm injects — one
-// artefact, two readers (Command Code parity, decisions row 17). Rows sort by
-// category, then confidence descending: the strongest taste in each section
-// reads first, and prewarm truncation (which drops trailing lines) drops the
-// weakest rows first. n is the number of preferences rendered.
-func Body(conn *sql.DB, opts RenderOptions) (body string, n int, err error) {
-	// Rulebook-tagged rows (learn.RulebookOverlap in provenance) merely
-	// restate the user's curated rulebook — suppressed here (and therefore
-	// from the SessionStart prewarm, which renders the same bytes) until
-	// consolidation retires them.
-	q := `SELECT category, statement, confidence FROM preferences WHERE valid_until IS NULL
-		AND provenance NOT LIKE '%"` + learn.RulebookOverlap + `"%'`
-	if !opts.IncludeConflicted {
-		q += ` AND id NOT IN (SELECT conflicting_id FROM conflicts WHERE resolved_at IS NULL)`
+// ProfileBudget is the token budget learn.SelectProfile fills against: the
+// shared prewarm_session budget minus whichever header (SessionStart's or
+// TASTE.md's) costs more, so the same budgeted profile serves both readers
+// without either overflowing (req 1). Exported so every caller that needs
+// the profile outside Body itself (recall's in_profile marker, `palate taste
+// --cut`) uses the identical budget Body does, instead of a second,
+// possibly-drifting copy of the formula.
+func ProfileBudget(cfg config.Config) int {
+	overhead := SessionOverhead(cfg)
+	if h := TasteHeaderOverhead(cfg); h > overhead {
+		overhead = h
 	}
-	q += ` ORDER BY category ASC, confidence DESC, statement ASC`
-	rows, err := conn.Query(q)
+	budget := cfg.TokenBudgets.PrewarmSession - overhead
+	if budget < 0 {
+		budget = 0
+	}
+	return budget
+}
+
+// Body is the profile body: "## Category" sections (ascending), one
+// "- statement. Confidence: 0.xx" bullet per preference (confidence
+// descending within a category) — the same bytes TASTE.md's body carries and
+// the same bytes the SessionStart prewarm injects (Command Code parity). Rows
+// come from learn.SelectProfile: a deterministic, budgeted, hysteresis-aware
+// subset of the live ledger, not a ranking cut applied at render time. n is
+// the number of preferences rendered (len(profile.In)).
+func Body(conn *sql.DB, cfg config.Config, opts RenderOptions) (body string, n int, err error) {
+	profile, err := learn.SelectProfile(conn, cfg, ProfileBudget(cfg))
 	if err != nil {
 		return "", 0, err
 	}
-	defer rows.Close()
-	type row struct {
-		stmt string
-		conf float64
-	}
-	byCat := map[string][]row{}
+	return renderProfileBody(profile.In), len(profile.In), nil
+}
+
+// renderProfileBody groups rows by category ascending, confidence descending
+// within each category (display order — independent of SelectProfile's own
+// rank order, which governs the budget fill, not the reading order).
+func renderProfileBody(rows []learn.Preference) string {
+	byCat := map[string][]learn.Preference{}
 	var cats []string
 	seen := map[string]bool{}
-	for rows.Next() {
-		var cat string
-		var r row
-		if err := rows.Scan(&cat, &r.stmt, &r.conf); err != nil {
-			continue
+	for _, p := range rows {
+		if !seen[p.Category] {
+			cats = append(cats, p.Category)
+			seen[p.Category] = true
 		}
-		if !seen[cat] {
-			cats = append(cats, cat)
-			seen[cat] = true
-		}
-		byCat[cat] = append(byCat[cat], r)
-		n++
+		byCat[p.Category] = append(byCat[p.Category], p)
 	}
 	sort.Strings(cats)
 	var b strings.Builder
 	for _, cat := range cats {
+		group := byCat[cat]
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].Confidence != group[j].Confidence {
+				return group[i].Confidence > group[j].Confidence
+			}
+			return group[i].Statement < group[j].Statement
+		})
 		b.WriteString(fmt.Sprintf("## %s\n\n", cat))
-		for _, p := range byCat[cat] {
-			b.WriteString(fmt.Sprintf("- %s. Confidence: %.2f\n", strings.TrimSuffix(p.stmt, "."), p.conf))
+		for _, p := range group {
+			b.WriteString(learn.BulletLine(p) + "\n")
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), n, nil
+	return b.String()
 }
 
-func WriteFile(conn *sql.DB, path string, opts RenderOptions) error {
-	_, err := Sync(conn, path, opts)
-	return err
+func WriteFile(conn *sql.DB, cfg config.Config, path string) error {
+	content, err := Render(conn, cfg, RenderOptions{})
+	if err != nil {
+		return err
+	}
+	if cur, rerr := os.ReadFile(path); rerr == nil && string(cur) == content {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
-// Sync renders and writes path only when the bytes changed, so the file's
-// mtime moves on real change alone. wrote reports whether it wrote.
-func Sync(conn *sql.DB, path string, opts RenderOptions) (wrote bool, err error) {
-	content, err := Render(conn, opts)
+// Sync is the one writer of both TASTE.md and its profile membership events
+// (profile_add/profile_cut). It runs inside withRenderLock, so it can never
+// interleave with a hook-triggered ReadBack: inside the lock it (1) reads
+// back the owner's hand edits when render.auto and profile.read_back_edits
+// are both on, calling the unlocked readBack directly since the lock is
+// already held; (2) selects the profile and diffs it against the previous
+// membership, appending profile_add/profile_cut events; (3) computes the
+// header from the post-event max event id and writes TASTE.md if it changed;
+// (4) always writes state/TASTE.base.md, even while a read-back hold
+// suppresses the TASTE.md write itself, so the base never falls out of step
+// with what Sync last computed. wrote reports whether TASTE.md was written.
+func Sync(conn *sql.DB, cfg config.Config, path string) (wrote bool, err error) {
+	var out bool
+	lockErr := withRenderLock(cfg, func() error {
+		var serr error
+		out, serr = sync(conn, cfg, path)
+		return serr
+	})
+	if lockErr != nil {
+		return false, lockErr
+	}
+	return out, nil
+}
+
+func sync(conn *sql.DB, cfg config.Config, path string) (bool, error) {
+	if cfg.Render.Auto && cfg.Profile.ReadBackEdits {
+		if err := readBack(conn, cfg, path); err != nil {
+			fmt.Fprintf(os.Stderr, "palate: read-back %s: %v\n", path, err)
+		}
+	}
+	if err := syncProfileEvents(conn, cfg); err != nil {
+		return false, err
+	}
+	content, err := Render(conn, cfg, RenderOptions{})
 	if err != nil {
 		return false, err
 	}
-	if cur, rerr := os.ReadFile(path); rerr == nil && string(cur) == content {
-		return false, nil
+	wrote := false
+	if !holdPending(cfg) {
+		cur, rerr := os.ReadFile(path)
+		if rerr != nil || string(cur) != content {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				return false, err
+			}
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				return false, err
+			}
+			wrote = true
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := writeBaseAtomic(cfg, extractBody(content)); err != nil {
 		return false, err
 	}
-	return true, os.WriteFile(path, []byte(content), 0644)
+	return wrote, nil
+}
+
+// writeBaseAtomic writes state/TASTE.base.md — the exact body Sync just
+// computed — through a temp file and rename, so a crash mid-write never
+// leaves ReadBack comparing against a half-written base.
+func writeBaseAtomic(cfg config.Config, body string) error {
+	dir := cfg.StateDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	path := cfg.StatePath("TASTE.base.md")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 var confidenceRe = regexp.MustCompile(`Confidence:\s*0\.\d+|Confidence:\s*1\.00`)

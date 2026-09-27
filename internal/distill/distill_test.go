@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/learn"
 )
 
 // fakeReplyServer always answers with content as the assistant message and
@@ -224,6 +225,117 @@ func TestDistillFinalFailureBumpsParseCounter(t *testing.T) {
 	}
 	if drops != 1 {
 		t.Fatalf("llm_distilled_parse drops = %d, want 1", drops)
+	}
+}
+
+// TestApplyDistilledProjectFlag proves phase-03 req 3 end to end on the
+// heuristic (no-Judge) path: a distilled statement flagged "project" carries
+// learn.TagProjectSpecific in provenance and SelectProfile excludes it, even
+// though the row itself is still stored as a candidate.
+func TestApplyDistilledProjectFlag(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+
+	stmt := "Uses a Makefile target named build-linux."
+	applied, dropped := ApplyDistilled(db, cfg, []DistilledStatement{
+		{Statement: stmt, Category: "Tooling", Confidence: 0.8, Evidence: "said so", Project: true},
+	})
+	if applied != 1 || dropped != 0 {
+		t.Fatalf("applied=%d dropped=%d, want 1,0", applied, dropped)
+	}
+
+	var id, prov string
+	if err := db.QueryRow(`SELECT id, provenance FROM preferences WHERE statement=?`, stmt).Scan(&id, &prov); err != nil {
+		t.Fatal(err)
+	}
+	if !learn.HasProjectSpecific(prov) {
+		t.Fatalf("a project:true statement must carry the project_specific tag: %q", prov)
+	}
+
+	profile, err := learn.SelectProfile(db, cfg, cfg.TokenBudgets.PrewarmSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, excluded := profile.Excluded[id]; !excluded || reason != "project-specific" {
+		t.Fatalf("a project-tagged row must be excluded from the profile, got excluded=%v reason=%q", excluded, reason)
+	}
+}
+
+// TestApplyDistilledThreadsSession proves phase-03 req 1's ApplyDistilled
+// half: an optional sessionKey rides the create event so
+// learn.SessionCounts sees it, and an omitted key writes no session field at
+// all (byte-for-byte legacy shape, backward compatible with the one
+// remaining 3-argument call site outside this package).
+func TestApplyDistilledThreadsSession(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+
+	applied, _ := ApplyDistilled(db, cfg, []DistilledStatement{
+		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.8, Evidence: "e"},
+	}, "claude_code:abc123456789")
+	if applied != 1 {
+		t.Fatalf("applied=%d, want 1", applied)
+	}
+	var payload string
+	if err := db.QueryRow(`SELECT payload FROM events WHERE event_type='create'`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"session":"claude_code:abc123456789"`) {
+		t.Fatalf("create event must carry the session key: %s", payload)
+	}
+
+	applied, _ = ApplyDistilled(db, cfg, []DistilledStatement{
+		{Statement: "Prefers tabs.", Category: "Formatting", Confidence: 0.8, Evidence: "e"},
+	})
+	if applied != 1 {
+		t.Fatalf("applied=%d, want 1", applied)
+	}
+	var tabsID string
+	if err := db.QueryRow(`SELECT id FROM preferences WHERE statement='Prefers tabs.'`).Scan(&tabsID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT payload FROM events WHERE event_type='create' AND json_extract(payload,'$.id')=?`, tabsID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, "session") {
+		t.Fatalf("an omitted session key must write no session field: %s", payload)
+	}
+}
+
+// TestAssistantOnlyEvidenceDropped covers phase-03 req 4's three cases:
+// evidence found only in an assistant message is dropped and counted;
+// evidence also found in a user message is kept; a paraphrase found in
+// neither is kept, since origin cannot be told.
+func TestAssistantOnlyEvidenceDropped(t *testing.T) {
+	batch := []Message{
+		{Role: "user", Content: "Please always use table-driven tests here."},
+		{Role: "assistant", Content: "Understood — I switched this file to use golden-file tests for renderers."},
+	}
+	statements := []DistilledStatement{
+		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.8, Evidence: "always use table-driven tests"},
+		{Statement: "Prefers golden-file tests for renderers.", Category: "Testing", Confidence: 0.8, Evidence: "switched this file to use golden-file tests for renderers"},
+		{Statement: "Prefers small functions.", Category: "General", Confidence: 0.6, Evidence: "inferred preference for small functions"},
+	}
+
+	db := testDB(t)
+	kept, dropped := filterAssistantOnlyEvidence(db, batch, statements)
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	var keptStatements []string
+	for _, s := range kept {
+		keptStatements = append(keptStatements, s.Statement)
+	}
+	if len(kept) != 2 || keptStatements[0] != "Prefers table-driven tests." || keptStatements[1] != "Prefers small functions." {
+		t.Fatalf("kept = %v, want the user-evidenced and the unattributable paraphrase, not the assistant-only one", keptStatements)
+	}
+
+	var drops int
+	if err := db.QueryRow(`SELECT drops FROM capture_counters WHERE signal_type='llm_distilled_assistant_evidence'`).Scan(&drops); err != nil {
+		t.Fatalf("capture_counters row missing: %v", err)
+	}
+	if drops != 1 {
+		t.Fatalf("llm_distilled_assistant_evidence drops = %d, want 1", drops)
 	}
 }
 

@@ -45,6 +45,18 @@ type Signal struct {
 	// Evidence is the short quote/paraphrase backing a distilled statement.
 	// It flows into the events log, never into the stored statement.
 	Evidence string `json:"evidence,omitempty"`
+	// Session identifies the session that produced this signal (the harness
+	// plus a short hash of the transcript path, Phase 3). It rides the
+	// create/reinforce event payload as "session" so learn.SessionCounts can
+	// tell "seen again" from "seen twice in the same conversation". Empty
+	// when the caller does not know it, in which case no field is written and
+	// SessionCounts falls back to the event's UTC calendar day.
+	Session string `json:"session,omitempty"`
+	// ProjectSpecific marks the statement as true only for the project it was
+	// learned in (a path, a repo-specific tool, a project's own naming
+	// convention) rather than a portable taste. It writes TagProjectSpecific
+	// into provenance on insert, the same mechanism RulebookOverlap uses.
+	ProjectSpecific bool `json:"project_specific,omitempty"`
 }
 
 // statedPrefRe matches an explicit, first-person statement of preference and

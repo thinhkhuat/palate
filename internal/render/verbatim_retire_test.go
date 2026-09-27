@@ -3,6 +3,8 @@ package render
 import (
 	"strings"
 	"testing"
+
+	"github.com/thinhkhuat/palate/internal/config"
 )
 
 // TestRenderHasNoMetadataSuffix: command-code parity — bullets carry the
@@ -13,7 +15,7 @@ func TestRenderHasNoMetadataSuffix(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO preferences(id, category, statement, confidence, source, trust_tier) VALUES('p1','General','Use tabs',0.8,'explicit_prefer','STATED')`); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Render(db, RenderOptions{})
+	out, err := Render(db, config.Default(), RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +46,7 @@ func TestRenderSortsByConfidence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	out, err := Render(db, RenderOptions{})
+	out, err := Render(db, config.Default(), RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

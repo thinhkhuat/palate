@@ -12,11 +12,11 @@ import (
 )
 
 type Memory struct {
-	ID        string  `json:"id"`
-	Content   string  `json:"content"`
+	ID         string  `json:"id"`
+	Content    string  `json:"content"`
 	Importance float64 `json:"importance"`
-	CreatedAt string  `json:"created_at"`
-	SessionID string  `json:"session_id"`
+	CreatedAt  string  `json:"created_at"`
+	SessionID  string  `json:"session_id"`
 }
 
 func newID() string {
@@ -50,6 +50,13 @@ func Remember(conn *sql.DB, content, sessionID string, importance float64, table
 	return id, nil
 }
 
+// Forget marks a memory or preference row gone. The three memory tables
+// (working_memory, episodic_memory, scratchpad) have no restore path, so they
+// keep the old hard delete. A preference retires softly instead (phase-02
+// req 10): valid_until is set, its open conflicts resolve, and the row stays
+// in the DB so learn.Restore (palate restore) can bring it back. Purge is the
+// hard-delete escape hatch (palate forget --purge) for when the owner really
+// wants a preference gone.
 func Forget(conn *sql.DB, id string) error {
 	tables := []string{"working_memory", "episodic_memory", "scratchpad"}
 	for _, t := range tables {
@@ -60,14 +67,30 @@ func Forget(conn *sql.DB, id string) error {
 			return nil
 		}
 	}
-	// A preference may still be referenced from conflicts (FK on preference_id and
-	// conflicting_id, foreign_keys=1), so clear those rows before deleting it.
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := conn.Exec(`UPDATE preferences SET valid_until=? WHERE id=? AND valid_until IS NULL`, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		_, _ = conn.Exec(`UPDATE conflicts SET resolved_at=? WHERE (preference_id=? OR conflicting_id=?) AND resolved_at IS NULL`, now, id, id)
+		_ = AppendEvent(conn, "forget", fmt.Sprintf(`{"id":%q,"table":%q,"reason":%q}`, id, "preferences", "owner forget"))
+		return nil
+	}
+	return fmt.Errorf("not found: %s", id)
+}
+
+// Purge hard-deletes a preference row and its conflicts the old way — for
+// --purge, when the owner wants it gone for good, not just retired.
+func Purge(conn *sql.DB, id string) error {
 	_, _ = conn.Exec(`DELETE FROM conflicts WHERE preference_id=? OR conflicting_id=?`, id, id)
-	if res, err := conn.Exec(`DELETE FROM preferences WHERE id=?`, id); err == nil {
-		if n, _ := res.RowsAffected(); n > 0 {
-			_ = AppendEvent(conn, "forget", fmt.Sprintf(`{"id":%q,"table":%q}`, id, "preferences"))
-			return nil
-		}
+	res, err := conn.Exec(`DELETE FROM preferences WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		_ = AppendEvent(conn, "forget", fmt.Sprintf(`{"id":%q,"table":%q,"reason":%q}`, id, "preferences", "purge"))
+		return nil
 	}
 	return fmt.Errorf("not found: %s", id)
 }
@@ -78,6 +101,11 @@ type RecallResult struct {
 	Score      float64 `json:"score"`
 	Table      string  `json:"table"`
 	Importance float64 `json:"importance"`
+	// InProfile is set by callers that know the current SelectProfile
+	// membership (learn.SelectProfile) — storage never imports learn, to
+	// avoid a cycle. Always false for a result this package computed on its
+	// own (e.g. a memory-table row, or before a caller annotates it).
+	InProfile bool `json:"in_profile,omitempty"`
 }
 
 func Recall(conn *sql.DB, query string, limit int, includeConflicts bool) ([]RecallResult, error) {
@@ -93,19 +121,19 @@ func RecallAtWithDecay(conn *sql.DB, query string, limit int, includeConflicts b
 }
 
 type RecallOptions struct {
-	CFloor         float64
-	HalfLifeHours  float64
-	Freshness      FreshnessWeights
-	RRFK           int
+	CFloor        float64
+	HalfLifeHours float64
+	Freshness     FreshnessWeights
+	RRFK          int
 }
 
 type FreshnessWeights struct {
-	Enabled       bool
-	T1Days        int
-	T1Weight      float64
-	T2Days        int
-	T2Weight      float64
-	T3Weight      float64
+	Enabled  bool
+	T1Days   int
+	T1Weight float64
+	T2Days   int
+	T2Weight float64
+	T3Weight float64
 }
 
 func RecallFull(conn *sql.DB, query string, limit int, includeConflicts bool, asOf *time.Time, opts RecallOptions) ([]RecallResult, error) {
@@ -333,7 +361,7 @@ func Sleep(conn *sql.DB) (int, error) {
 	}
 	type row struct {
 		id, content, sessionID, createdAt string
-		importance float64
+		importance                        float64
 	}
 	var batch []row
 	for rows.Next() {

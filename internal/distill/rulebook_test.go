@@ -37,6 +37,35 @@ func TestBuildUserPromptRulebookSection(t *testing.T) {
 	}
 }
 
+// TestParseResponseProjectFlag mirrors TestParseResponseRulebookFlag for the
+// "project" flag (phase-03 req 3): present and true parses, absent defaults
+// false.
+func TestParseResponseProjectFlag(t *testing.T) {
+	stmts, err := ParseResponse(`{"preferences":[{"statement":"Uses a Makefile target named build-linux.","category":"Tooling","confidence":0.7,"project":true,"evidence":"e"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stmts) != 1 || !stmts[0].Project {
+		t.Fatalf("the optional project flag must parse: %+v (err %v)", stmts, err)
+	}
+	stmts, err = ParseResponse(`{"preferences":[{"statement":"Prefers tabs.","category":"Editing","confidence":0.8,"evidence":"e"}]}`)
+	if err != nil || len(stmts) != 1 || stmts[0].Project {
+		t.Fatalf("an absent flag must default to false: %+v (err %v)", stmts, err)
+	}
+}
+
+// TestSystemPromptMentionsProject proves the new rules actually render into
+// the prompt the model sees (phase-03: "keep prompt-text changes tight and
+// test that the new rules are present in the rendered prompt").
+func TestSystemPromptMentionsProject(t *testing.T) {
+	if !strings.Contains(SystemPrompt, `"project"`) {
+		t.Fatalf("SystemPrompt must instruct the model on the project flag: %s", SystemPrompt)
+	}
+	if !strings.Contains(SystemPrompt, "assistant itself wrote") {
+		t.Fatalf("SystemPrompt must state that assistant-authored text is never evidence: %s", SystemPrompt)
+	}
+}
+
 func TestGatewayStampsLastCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

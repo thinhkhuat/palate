@@ -21,8 +21,8 @@ func TestRenderDeterministic(t *testing.T) {
 	t.Cleanup(func() { storage.Close() })
 	cfg := config.Default()
 	_, _ = learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "use table-driven tests", Category: "Testing"}, nil)
-	a, _ := Render(db, RenderOptions{})
-	b, _ := Render(db, RenderOptions{})
+	a, _ := Render(db, cfg, RenderOptions{})
+	b, _ := Render(db, cfg, RenderOptions{})
 	if a != b {
 		t.Fatalf("render not deterministic")
 	}
@@ -70,18 +70,22 @@ func TestReimportQuarantine(t *testing.T) {
 // timestamp churn) and every bullet ends with its source and trust tier.
 func TestRenderHeaderAndProvenance(t *testing.T) {
 	db := openTestDB(t)
+	cfg := config.Default()
 	if _, err := db.Exec(`INSERT INTO preferences(id, category, statement, confidence, source, trust_tier) VALUES('p1','General','Use tabs',0.8,'explicit_prefer','STATED')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO events(event_type, payload) VALUES('create','{}')`); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Render(db, RenderOptions{})
+	out, err := Render(db, cfg, RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out, "<!-- auto-maintained by palate after event #1;") {
 		t.Fatalf("header missing or wrong: %q", out)
+	}
+	if !strings.Contains(out, "edit freely") {
+		t.Fatalf("header must invite hand edits: %q", out)
 	}
 	if !strings.Contains(out, "- Use tabs. Confidence: 0.80\n") {
 		t.Fatalf("command-code bullet shape missing: %q", out)
@@ -98,18 +102,20 @@ func TestRenderHeaderAndProvenance(t *testing.T) {
 // Sync reports no write the second time.
 func TestSyncUnchangedNoRewrite(t *testing.T) {
 	db := openTestDB(t)
+	cfg := config.Default()
+	cfg.Home = t.TempDir()
 	_, _ = db.Exec(`INSERT INTO preferences(id, category, statement, confidence, source, trust_tier) VALUES('p1','General','Use tabs',0.8,'explicit_prefer','STATED')`)
-	path := filepath.Join(t.TempDir(), "nested", "TASTE.md")
-	wrote, err := Sync(db, path, RenderOptions{})
+	path := filepath.Join(cfg.Home, "nested", "TASTE.md")
+	wrote, err := Sync(db, cfg, path)
 	if err != nil || !wrote {
 		t.Fatalf("first Sync must write: wrote=%v err=%v", wrote, err)
 	}
-	wrote, err = Sync(db, path, RenderOptions{})
+	wrote, err = Sync(db, cfg, path)
 	if err != nil || wrote {
 		t.Fatalf("second Sync on an unchanged DB must not write: wrote=%v err=%v", wrote, err)
 	}
 	_, _ = db.Exec(`INSERT INTO events(event_type, payload) VALUES('create','{}')`)
-	wrote, _ = Sync(db, path, RenderOptions{})
+	wrote, _ = Sync(db, cfg, path)
 	if !wrote {
 		t.Fatal("a new event changes the header and must be written")
 	}

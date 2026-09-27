@@ -3,6 +3,8 @@ package render
 import (
 	"strings"
 	"testing"
+
+	"github.com/thinhkhuat/palate/internal/config"
 )
 
 func TestBodySuppressesRulebookRows(t *testing.T) {
@@ -16,7 +18,7 @@ func TestBodySuppressesRulebookRows(t *testing.T) {
 	}
 	insert("keep", "Prefers table-driven tests.", `["stated_preference"]`)
 	insert("drop", "Prefers table-driven tests with mocks.", `["stated_preference","rulebook_overlap"]`)
-	body, n, err := Body(db, RenderOptions{})
+	body, n, err := Body(db, config.Default(), RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

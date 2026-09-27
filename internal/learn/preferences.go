@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -129,7 +130,7 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 				_, _ = conn.Exec(`UPDATE preferences SET confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1 WHERE id=?`, c, nowStr, existing.ID)
 				_ = storage.AppendEvent(conn, "weaken", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f}`, existing.ID, c), sig.Evidence))
 			}
-			_ = insertConflict(conn, existing.ID, sig.Statement, w, cfg, nowStr)
+			_ = insertConflict(conn, existing.ID, sig, w, cfg, nowStr)
 			return existing, nil
 		}
 		c = Reinforce(c, w, cfg.LearningRate, cfg.CFloor)
@@ -138,7 +139,7 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 		if err != nil {
 			return nil, err
 		}
-		_ = storage.AppendEvent(conn, "reinforce", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, existing.ID, c, sig.Type), sig.Evidence))
+		_ = storage.AppendEvent(conn, "reinforce", withEvidence(withSession(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, existing.ID, c, sig.Type), sig.Session), sig.Evidence))
 		existing.Confidence = c
 		return existing, nil
 	}
@@ -153,7 +154,11 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 		conf = distilledSeed(w, cfg.CFloor)
 	}
 	id := newID()
-	prov, _ := json.Marshal([]string{string(sig.Type)})
+	provTags := []string{string(sig.Type)}
+	if sig.ProjectSpecific {
+		provTags = append(provTags, TagProjectSpecific)
+	}
+	prov, _ := json.Marshal(provTags)
 	trustTier := "STATED"
 	if sig.Type == SignalImported {
 		trustTier = "IMPORTED"
@@ -172,8 +177,21 @@ func ApplySignal(conn *sql.DB, cfg config.Config, sig Signal, asOf *time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	_ = storage.AppendEvent(conn, "create", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, id, conf, sig.Type), sig.Evidence))
+	_ = storage.AppendEvent(conn, "create", withEvidence(withSession(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, id, conf, sig.Type), sig.Session), sig.Evidence))
 	return &Preference{ID: id, Category: sig.Category, Statement: sig.Statement, Confidence: conf, TrustTier: trustTier}, nil
+}
+
+// withSession inserts a "session" field into a JSON object payload built
+// with fmt.Sprintf, just before its closing brace — applied before
+// withEvidence, so both fields land in the same object. An empty session
+// writes no field, so a caller that does not know one keeps the legacy
+// payload shape byte-for-byte.
+func withSession(payload, session string) string {
+	if session == "" {
+		return payload
+	}
+	b, _ := json.Marshal(session)
+	return strings.TrimSuffix(payload, "}") + `,"session":` + string(b) + "}"
 }
 
 // withEvidence inserts a censored "evidence" field into a JSON object
@@ -395,19 +413,40 @@ func jaccard(a, b map[string]bool) float64 {
 	return float64(inter) / float64(union)
 }
 
-func insertConflict(conn *sql.DB, existingID, newStatement string, w float64, cfg config.Config, nowStr string) error {
+// insertConflict stores the new (contradicting) side of a heuristic
+// contradiction and links it to the row it contradicts. The new row's tier
+// follows sig.Type with the same mapping insertJudgedRow uses (:631-636
+// pre-phase-01 numbering) — a distilled contradiction lands DISTILLED, not
+// STATED, so under the new eligibility rule it cannot jump straight into the
+// profile off a single heuristic pass (red-team, req 3). It appends its own
+// "create" event (red-team L1): before this fix the new side was silently
+// inserted with no event at all.
+func insertConflict(conn *sql.DB, existingID string, sig Signal, w float64, cfg config.Config, nowStr string) error {
 	conf := InitialConfidence(w, cfg.CFloor)
-	cat := InferCategoryFromStatement(newStatement)
-	prov, _ := json.Marshal([]string{"contradiction"})
+	cat := InferCategoryFromStatement(sig.Statement)
+	provTags := []string{"contradiction"}
+	if sig.ProjectSpecific {
+		provTags = append(provTags, TagProjectSpecific)
+	}
+	prov, _ := json.Marshal(provTags)
+	trustTier := "STATED"
+	if sig.Type == SignalImported {
+		trustTier = "IMPORTED"
+	} else if sig.Type == SignalLLMDistilled {
+		trustTier = "DISTILLED"
+	}
 	newPrefID := newID()
 	_, err := conn.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, valid_from, created_at, last_reinforced_at, trust_tier, veracity)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, newPrefID, cat, newStatement, conf, 0.5, "stated_preference", string(prov), nowStr, nowStr, nowStr, "STATED", "stated")
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, newPrefID, cat, sig.Statement, conf, 0.5, "stated_preference", string(prov), nowStr, nowStr, nowStr, trustTier, "stated")
 	if err != nil {
 		return err
 	}
 	cid := newID()
-	_, err = conn.Exec(`INSERT INTO conflicts(id, preference_id, conflicting_id, reason) VALUES(?,?,?,?)`, cid, existingID, newPrefID, "contradiction")
-	return err
+	if _, err := conn.Exec(`INSERT INTO conflicts(id, preference_id, conflicting_id, reason) VALUES(?,?,?,?)`, cid, existingID, newPrefID, "contradiction"); err != nil {
+		return err
+	}
+	payload := withSession(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q}`, newPrefID, conf, sig.Type), sig.Session)
+	return storage.AppendEvent(conn, "create", withEvidence(payload, sig.Evidence))
 }
 
 func appendProvenance(existing, sig string) string {
@@ -495,6 +534,10 @@ type Assessment struct {
 	// the user's curated rulebook (config key `rulebook:`). Set by the LLM
 	// verdict, the distiller's flag, or both; stored in provenance.
 	RulebookOverlap bool
+	// ProjectSpecific marks the statement as true only for the project it was
+	// learned in rather than a portable taste. Stored in provenance as
+	// TagProjectSpecific, the same mechanism RulebookOverlap uses.
+	ProjectSpecific bool
 }
 
 // ActiveInCategory lists the live rows a judge compares a candidate against.
@@ -574,8 +617,17 @@ func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Pr
 		c := Reinforce(Decay(target.Confidence, cfg.CFloor, cfg.HalfLifeHours, dh), w, cfg.LearningRate, cfg.CFloor)
 		stmt := target.Statement
 		if a.Relation == RelationRefines && a.Statement != "" && a.Statement != target.Statement {
-			stmt = a.Statement
-			_ = storage.AppendEvent(conn, "refine", withEvidence(fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"by":%q}`, target.ID, target.Statement, stmt, a.By), sig.Evidence))
+			// A rewrite is gated the same way a dream-pass rewrite is
+			// (requirement 8): refused for STATED targets, for a script
+			// change, or for growth. Refused here means the row is still
+			// reinforced below but keeps its stored text; the reason goes to
+			// stderr, never to a silently dropped edit (requirement 11).
+			if allowed, reason := RewriteAllowed(conn, *target, a.Statement, false); allowed {
+				stmt = a.Statement
+				_ = storage.AppendEvent(conn, "refine", withEvidence(fmt.Sprintf(`{"id":%q,"from":%q,"to":%q,"by":%q}`, target.ID, target.Statement, stmt, a.By), sig.Evidence))
+			} else {
+				fmt.Fprintf(os.Stderr, "palate: refines rewrite refused for %s: %s\n", target.ID, reason)
+			}
 		}
 		// A rulebook restatement tags the target too: reinforcing an
 		// existing row with rulebook evidence means that row restates the
@@ -586,11 +638,17 @@ func ApplyJudged(conn *sql.DB, cfg config.Config, sig Signal, a Assessment) (*Pr
 			}
 			target.Provenance = appendProvenance(target.Provenance, RulebookOverlap)
 		}
+		if a.ProjectSpecific && !HasProjectSpecific(target.Provenance) {
+			if _, err := conn.Exec(`UPDATE preferences SET provenance=json_insert(provenance, '$[#]', ?) WHERE id=?`, TagProjectSpecific, target.ID); err != nil {
+				return nil, err
+			}
+			target.Provenance = appendProvenance(target.Provenance, TagProjectSpecific)
+		}
 		if _, err := conn.Exec(`UPDATE preferences SET statement=?, confidence=?, last_reinforced_at=?, reinforcement_count=reinforcement_count+1, provenance=? WHERE id=?`,
 			stmt, c, now, appendProvenance(target.Provenance, string(sig.Type)+"/judged:"+a.By), target.ID); err != nil {
 			return nil, err
 		}
-		_ = storage.AppendEvent(conn, "reinforce", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, target.ID, c, sig.Type, a.By), sig.Evidence))
+		_ = storage.AppendEvent(conn, "reinforce", withEvidence(withSession(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, target.ID, c, sig.Type, a.By), sig.Session), sig.Evidence))
 		target.Statement, target.Confidence = stmt, c
 		return target, nil
 	case RelationContradicts:
@@ -627,6 +685,9 @@ func insertJudgedRow(conn *sql.DB, cfg config.Config, sig Signal, a Assessment, 
 	if a.RulebookOverlap {
 		provTags = append(provTags, RulebookOverlap)
 	}
+	if a.ProjectSpecific {
+		provTags = append(provTags, TagProjectSpecific)
+	}
 	prov, _ := json.Marshal(provTags)
 	trustTier := "STATED"
 	if sig.Type == SignalImported {
@@ -639,7 +700,7 @@ func insertJudgedRow(conn *sql.DB, cfg config.Config, sig Signal, a Assessment, 
 		id, a.Category, a.Statement, conf, 0.5, string(sig.Type), string(prov), now, now, now, 0, trustTier, string(sig.Type)); err != nil {
 		return nil, err
 	}
-	_ = storage.AppendEvent(conn, "create", withEvidence(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, id, conf, sig.Type, a.By), sig.Evidence))
+	_ = storage.AppendEvent(conn, "create", withEvidence(withSession(fmt.Sprintf(`{"id":%q,"c":%f,"signal":%q,"by":%q}`, id, conf, sig.Type, a.By), sig.Session), sig.Evidence))
 	return &Preference{ID: id, Category: a.Category, Statement: a.Statement, Confidence: conf, TrustTier: trustTier}, nil
 }
 

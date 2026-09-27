@@ -282,6 +282,59 @@ func TestRelativeDBPathIsAnchoredToCwd(t *testing.T) {
 	}
 }
 
+// TestConfigProfileDefaults pins the new profile.*/consolidate.* knobs and
+// the prewarm_goal default flip (200 -> 0, phase-01 req 12).
+func TestConfigProfileDefaults(t *testing.T) {
+	d := Default()
+	if !d.Profile.ExcludeProjectSpecific || !d.Profile.ReadBackEdits || !d.Profile.PromptBlock {
+		t.Fatalf("profile defaults must all be on: %+v", d.Profile)
+	}
+	if d.Consolidate.TimeoutSeconds != 120 || d.Consolidate.StaleCandidateDays != 30 {
+		t.Fatalf("consolidate defaults: %+v", d.Consolidate)
+	}
+	if d.TokenBudgets.PrewarmGoal != 0 {
+		t.Fatalf("prewarm_goal default must be 0 (off), got %d", d.TokenBudgets.PrewarmGoal)
+	}
+
+	dir := t.TempDir()
+	noKeys := filepath.Join(dir, "no-keys.yaml")
+	if err := os.WriteFile(noKeys, []byte("c_floor: 0.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(noKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Profile.ExcludeProjectSpecific || !cfg.Profile.ReadBackEdits || !cfg.Profile.PromptBlock {
+		t.Fatalf("YAML without profile keys must keep defaults: %+v", cfg.Profile)
+	}
+	if cfg.Consolidate.TimeoutSeconds != 120 || cfg.Consolidate.StaleCandidateDays != 30 {
+		t.Fatalf("YAML without consolidate keys must keep defaults: %+v", cfg.Consolidate)
+	}
+
+	explicit := filepath.Join(dir, "explicit.yaml")
+	body := "profile:\n  exclude_project_specific: false\nconsolidate:\n  timeout_seconds: 0\n  stale_candidate_days: 0\ntoken_budgets:\n  prewarm_goal: 45\n"
+	if err := os.WriteFile(explicit, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Profile.ExcludeProjectSpecific {
+		t.Fatal("explicit false must be honoured")
+	}
+	if !cfg2.Profile.ReadBackEdits || !cfg2.Profile.PromptBlock {
+		t.Fatalf("keys absent from the explicit document must still default true: %+v", cfg2.Profile)
+	}
+	if cfg2.Consolidate.TimeoutSeconds != 0 || cfg2.Consolidate.StaleCandidateDays != 0 {
+		t.Fatalf("explicit 0 must be honoured: %+v", cfg2.Consolidate)
+	}
+	if cfg2.TokenBudgets.PrewarmGoal != 45 {
+		t.Fatalf("explicit non-zero prewarm_goal must turn the goal block back on: %d", cfg2.TokenBudgets.PrewarmGoal)
+	}
+}
+
 func TestDistillModeEnvAndSkipDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PALATE_DISTILL_MODE", "off")

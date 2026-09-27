@@ -1,11 +1,13 @@
 package judge
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,25 @@ import (
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns what
+// was written to it — used to prove a refused rewrite logs its reason
+// (phase-01 req 11), not just silently keeps the old text.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = orig
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -153,17 +174,23 @@ func shape(t *testing.T, db *sql.DB) []string {
 }
 
 // TestLLMJudgeRelations drives Apply through a fake gateway for each verdict.
+//
+// The seed is DISTILLED, not the STATED tier an explicit_prefer signal would
+// give: learn.RewriteAllowed refuses to rewrite STATED text unconditionally
+// (phase-01 req 8), so the "refines" step below needs a non-STATED target to
+// stay eligible for a rewrite. A rewrite only ever trims, never grows (req 8
+// bullet 3), so the refined text here is shorter than the seed's original —
+// TestLLMJudgeRefinesRefusesStatedTarget below covers the STATED case.
 func TestLLMJudgeRelations(t *testing.T) {
 	db := testDB(t)
-	// seed one row the model can point at
-	seed, err := learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers table-driven tests.", Category: "Testing"}, nil)
+	seed, err := learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers table-driven tests with subtests named after the case.", Category: "Testing", Weight: 0.5}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv, calls := fakeGateway(t,
 		verdictJSON("Prefers golden-file tests for renderers.", "Testing", 0.8, "new", ""),
 		verdictJSON("Prefers table-driven tests.", "Testing", 0.9, "same", seed.ID),
-		verdictJSON("Prefers table-driven tests with subtests named after the case.", "Testing", 0.85, "refines", seed.ID),
+		verdictJSON("Prefers table-driven tests.", "Testing", 0.85, "refines", seed.ID),
 		verdictJSON("Prefers one assertion per test function.", "Testing", 0.7, "contradicts", seed.ID),
 		verdictJSON("Prefers something.", "Testing", 0.7, "same", "not-a-real-id"),
 	)
@@ -181,8 +208,8 @@ func TestLLMJudgeRelations(t *testing.T) {
 	}
 
 	p, a, _ = Apply(context.Background(), db, cfg, Input{Statement: "name subtests after the case", Signal: learn.SignalExplicitPrefer}, "")
-	if a.Relation != learn.RelationRefines || p.ID != seed.ID || p.Statement != "Prefers table-driven tests with subtests named after the case." {
-		t.Fatalf("refines must rewrite the target: %+v %+v", p, a)
+	if a.Relation != learn.RelationRefines || p.ID != seed.ID || p.Statement != "Prefers table-driven tests." {
+		t.Fatalf("refines must rewrite a non-STATED target: %+v %+v", p, a)
 	}
 	var refines int
 	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='refine'`).Scan(&refines)
@@ -214,6 +241,75 @@ func TestLLMJudgeRelations(t *testing.T) {
 	_ = db.QueryRow(`SELECT hits FROM capture_counters WHERE signal_type='judge_llm'`).Scan(&hits)
 	if hits != 5 {
 		t.Fatalf("judge_llm counter = %d, want 5", hits)
+	}
+}
+
+// TestLLMJudgeRefinesRefusesStatedTarget proves phase-01 req 8/11 end to end:
+// a STATED target (the common case — any explicit_prefer signal seeds
+// STATED) is never rewritten by a "refines" verdict. The row still
+// reinforces, the refused reason reaches stderr, and no "refine" event is
+// written.
+func TestLLMJudgeRefinesRefusesStatedTarget(t *testing.T) {
+	db := testDB(t)
+	seed, err := learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers table-driven tests.", Category: "Testing"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seed.TrustTier != "STATED" {
+		t.Fatalf("an explicit_prefer seed must be STATED, got %s", seed.TrustTier)
+	}
+	srv, _ := fakeGateway(t, verdictJSON("Prefers table-driven tests with subtests named after the case.", "Testing", 0.85, "refines", seed.ID))
+	cfg := llmCfg(t, srv)
+
+	before := seed.Confidence
+	var p *learn.Preference
+	var a learn.Assessment
+	stderr := captureStderr(t, func() {
+		p, a, err = Apply(context.Background(), db, cfg, Input{Statement: "name subtests after the case", Signal: learn.SignalExplicitPrefer}, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Relation != learn.RelationRefines || p.ID != seed.ID {
+		t.Fatalf("expected a refines verdict against the seed: %+v %+v", p, a)
+	}
+	if p.Statement != seed.Statement {
+		t.Fatalf("a STATED target's text must be kept, got %q", p.Statement)
+	}
+	if p.Confidence <= before {
+		t.Fatalf("the row must still reinforce even when the rewrite is refused: before=%f after=%f", before, p.Confidence)
+	}
+	if !strings.Contains(stderr, "refused") {
+		t.Fatalf("a refused rewrite must log its reason to stderr, got %q", stderr)
+	}
+	var refines int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='refine'`).Scan(&refines)
+	if refines != 0 {
+		t.Fatalf("a refused rewrite must not log a refine event, got %d", refines)
+	}
+}
+
+// TestJudgeTargetsOnlyCompareSet proves phase-03 req 2's guard still holds
+// once the whole ledger is replaced by the compare set: a row excluded from
+// the compare set (DISTILLED, one session, no wording overlap with the
+// candidate) is a real, existing id the model was never shown. A verdict
+// that names it as a target anyway must degrade to "new", exactly as an
+// outright hallucinated id does.
+func TestJudgeTargetsOnlyCompareSet(t *testing.T) {
+	db := testDB(t)
+	hidden, err := learn.ApplySignal(db, config.Default(), learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers dark mode in every editor.", Category: "Tooling", Weight: 0.5}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := fakeGateway(t, verdictJSON("Prefers tabs over spaces.", "Formatting", 0.7, "same", hidden.ID))
+	cfg := llmCfg(t, srv)
+
+	_, a, err := Apply(context.Background(), db, cfg, Input{Statement: "use tabs not spaces", Signal: learn.SignalExplicitPrefer}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Relation != learn.RelationNew || a.TargetID != "" {
+		t.Fatalf("a target outside the compare set must degrade to new, got %+v", a)
 	}
 }
 

@@ -328,12 +328,64 @@ func TestUserPromptNoticeReportsLearned(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed); err != nil {
 		t.Fatalf("hook output not JSON: %v\n%s", err, out)
 	}
-	if !strings.Contains(parsed.SystemMessage, "since your last prompt — learned 1") {
+	if !strings.Contains(parsed.SystemMessage, "since your last prompt — profile +1 −0; ledger: learned 1") ||
+		!strings.Contains(parsed.SystemMessage, `New in profile: "Prefers inline notices about freshly learned taste"`) {
 		t.Fatalf("notice missing: %q", parsed.SystemMessage)
 	}
 	ctx := parsed.HookSpecificOutput.AdditionalContext
 	if !strings.Contains(ctx, "<palate-learned>") || !strings.Contains(ctx, "Prefers inline notices about freshly learned taste") || !strings.Contains(ctx, "Confidence: ") {
 		t.Fatalf("learned block missing or malformed: %q", ctx)
+	}
+}
+
+// TestLearnedBlockProfileOnly: the per-prompt <palate-learned> block carries
+// only rows the profile_add event marks as having entered the profile
+// (phase-02 req 8); a one-session distilled row stays invisible until a
+// second, distinct session admits it. profile.prompt_block: false restores
+// the old behaviour (every created/refined row, profile membership aside).
+func TestLearnedBlockProfileOnly(t *testing.T) {
+	setupTempProject(t)
+	runHook(t, `{"prompt":"seed"}`, "hook", "user-prompt")
+
+	cfg := loadConfig()
+	db := openDB(cfg)
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers a one-session distilled row.", Category: "Testing", Weight: 0.7, Session: "s1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+
+	out := runHook(t, `{"prompt":"carry on"}`, "hook", "user-prompt")
+	if strings.Contains(out, "Prefers a one-session distilled row") {
+		t.Fatalf("a one-session distilled row must not appear in the learned block yet: %s", out)
+	}
+
+	// A second, distinct session reinforces it into the profile.
+	cfg = loadConfig()
+	db = openDB(cfg)
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers a one-session distilled row.", Category: "Testing", Weight: 0.7, Session: "s2"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+
+	out = runHook(t, `{"prompt":"carry on again"}`, "hook", "user-prompt")
+	if !strings.Contains(out, "Prefers a one-session distilled row") {
+		t.Fatalf("a row that just entered the profile must appear in the learned block: %s", out)
+	}
+
+	// profile.prompt_block: false restores the old behaviour: every
+	// created/refined row, whether or not it made the profile.
+	if err := os.WriteFile("config.yaml", []byte("db_path: .palate/palate.db\nprofile:\n  prompt_block: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = loadConfig()
+	db = openDB(cfg)
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers another one-session row.", Category: "Testing", Weight: 0.7, Session: "s3"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+	out = runHook(t, `{"prompt":"carry on once more"}`, "hook", "user-prompt")
+	if !strings.Contains(out, "Prefers another one-session row") {
+		t.Fatalf("prompt_block:false must restore the old created/refined behaviour: %s", out)
 	}
 }
 
@@ -404,7 +456,7 @@ func TestInitSeedsNoticeCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := runHook(t, `{"prompt":"first ever prompt"}`, "hook", "user-prompt")
-	if !strings.Contains(out, "since your last prompt — learned 1") || !strings.Contains(out, "Prefers the very first hook to announce this") {
+	if !strings.Contains(out, "since your last prompt — profile +1 −0; ledger: learned 1") || !strings.Contains(out, "Prefers the very first hook to announce this") {
 		t.Fatalf("first hook after init must announce the backlog: %s", out)
 	}
 }

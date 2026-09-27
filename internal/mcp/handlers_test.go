@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
 
@@ -182,4 +183,47 @@ func TestMCPPreferJudged(t *testing.T) {
 	if stmt != "Prefers table-driven tests." {
 		t.Fatalf("row must store the judged wording, got %q", stmt)
 	}
+}
+
+// TestRecallMarksProfileRows: palate_recall keeps searching the whole live
+// ledger, but a STATED profile member gets in_profile=true and a one-session
+// candidate gets false (phase-02 req 14).
+func TestRecallMarksProfileRows(t *testing.T) {
+	db := memStore(t)
+	res, _, err := handlePrefer(context.Background(), nil, StatementInput{Statement: "Prefers a profile member row"})
+	if err != nil || res.IsError {
+		t.Fatalf("handlePrefer: err=%v res=%+v", err, res)
+	}
+	cfg, err := config.Resolve("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalLLMDistilled, Statement: "Prefers a mere candidate row", Category: "Testing", Weight: 0.6}, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err = handleRecall(context.Background(), nil, RecallInput{Query: "Prefers"})
+	if err != nil {
+		t.Fatalf("handleRecall: %v", err)
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	memberLine := lineWith(text, "Prefers a profile member row")
+	candidateLine := lineWith(text, "Prefers a mere candidate row")
+	if memberLine == "" || candidateLine == "" {
+		t.Fatalf("recall must return both rows: %s", text)
+	}
+	if !strings.Contains(memberLine, "[profile]") {
+		t.Fatalf("the profile member must carry the [profile] marker: %q", memberLine)
+	}
+	if strings.Contains(candidateLine, "[profile]") {
+		t.Fatalf("a mere candidate must not carry the [profile] marker: %q", candidateLine)
+	}
+}
+
+func lineWith(content, substr string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
 }
