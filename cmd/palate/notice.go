@@ -7,8 +7,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/consolidate"
 	"github.com/thinhkhuat/palate/internal/distill"
 	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/render"
@@ -16,6 +18,23 @@ import (
 
 // noticeCursorFile remembers the last event a notice covered.
 const noticeCursorFile = "notice_cursor"
+
+// heldEditAdvice is the held-edit sentence of the notice. A hold that cannot
+// be applied safely (an old-format file written by an older palate, an
+// unverifiable base) is discard-only, so it must not tell the owner to accept
+// it.
+func heldEditAdvice(cfg config.Config) string {
+	confirm := fmt.Sprintf("(it lists every retired line it would bring back and every line beyond the %d-line limit, and needs `--yes` for those)", render.HoldLineCap)
+	switch {
+	case render.HoldHeaderRemoved(cfg):
+		return "a hand edit to TASTE.md whose header line was removed is held — run `palate taste --accept-edits` to apply its new lines " + confirm + " or `palate taste` to discard it (a copy is kept in state/)."
+	case render.HoldNeedsConfirm(cfg):
+		return "a hand edit to TASTE.md saved from an out-of-date copy is held — run `palate taste --accept-edits` to apply its new lines " + confirm + " or `palate taste` to discard it (a copy is kept in state/)."
+	case render.HoldAcceptable(cfg):
+		return "a hand edit to TASTE.md is held — run `palate taste --accept-edits` to apply it " + confirm + " or `palate taste` to discard it (a copy is kept in state/)."
+	}
+	return "a TASTE.md edit that cannot be applied safely is held (written by an older palate or against an unknown profile) — run `palate taste` to discard it (a copy is kept in state/)."
+}
 
 // learnedSinceNotice tells the user what Palate learned since the previous
 // notice on this home — Command Code shows the same thing as inline "taste
@@ -55,7 +74,7 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config, since string) (notice, le
 		// nothing), so it must be surfaced here too — otherwise a hold with
 		// no other ledger activity since the cursor would never be reported.
 		if render.HoldPending(cfg) {
-			return fmt.Sprintf("palate: %s — a hand edit to TASTE.md is held — run `palate taste --accept-edits` to apply it or `palate taste` to discard it.", since), ""
+			return fmt.Sprintf("palate: %s — %s", since, heldEditAdvice(cfg)), ""
 		}
 		return "", ""
 	}
@@ -114,8 +133,9 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config, since string) (notice, le
 		}
 	}
 	_ = os.WriteFile(path, []byte(strconv.FormatInt(last, 10)), 0o600)
+	failures := failedAttemptLines(cfg, cursor, last)
 	if learned+refined+consolidated+retired+added+cut+refused == 0 {
-		return "", ""
+		return strings.Join(failures, "\n"), ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "palate: %s — profile +%d −%d; ledger: learned %d, refined %d, consolidated %d, retired %d.", since, added, cut, learned, refined, consolidated, retired)
@@ -125,13 +145,52 @@ func learnedSinceNotice(db *sql.DB, cfg config.Config, since string) (notice, le
 		fmt.Fprintf(&b, " %d hand-edited line(s) refused (unsafe content, never stored).", refused)
 	}
 	if render.HoldPending(cfg) {
-		b.WriteString(" A hand edit to TASTE.md is held — run `palate taste --accept-edits` to apply it or `palate taste` to discard it.")
+		advice := heldEditAdvice(cfg)
+		b.WriteString(" " + strings.ToUpper(advice[:1]) + advice[1:])
+	}
+	for _, line := range failures {
+		b.WriteString("\n" + line)
 	}
 	learnedIDs := profileAddIDs
 	if !cfg.Profile.PromptBlock {
 		learnedIDs = createRefineIDs
 	}
 	return b.String(), learnedLines(db, cfg, learnedIDs, since)
+}
+
+// failedAttemptLines turns every error or skipped-lock entry of the dream
+// pass's attempt log recorded after the notice cursor into one notice line, so
+// a failed clean-up is never silent (phase-04 req 8). A failed or skipped
+// attempt stamps its entry with the id of an event it appends itself, so the
+// entry's event_id is strictly past the cursor of any notice that preceded it
+// and at most the head (last) of the notice that reports it: each is reported
+// once. An entry past last was written after this notice read the head; the
+// next notice reports it.
+func failedAttemptLines(cfg config.Config, cursor, last int64) []string {
+	attempts, err := consolidate.ReadAttempts(cfg)
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, a := range attempts {
+		if a.EventID <= cursor || a.EventID > last || (a.Outcome != "error" && a.Outcome != "skipped-lock") {
+			continue
+		}
+		at := "an earlier time"
+		if t, perr := time.Parse(time.RFC3339, a.At); perr == nil {
+			at = t.Local().Format("15:04")
+		}
+		if a.Outcome == "skipped-lock" {
+			lines = append(lines, fmt.Sprintf("palate: profile clean-up skipped at %s (another learn pass held the lock) — retrying next session.", at))
+			continue
+		}
+		reason := strings.Join(strings.Fields(a.Error), " ")
+		if len(reason) > 160 {
+			reason = reason[:157] + "…"
+		}
+		lines = append(lines, fmt.Sprintf("palate: profile clean-up failed at %s (%s) — retrying next session; run 'palate consolidate' to retry now.", at, reason))
+	}
+	return lines
 }
 
 // appendStatementList appends " Label: "quote"; "quote"." to b for up to 3

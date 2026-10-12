@@ -116,3 +116,30 @@ func TestFTSStaysInSyncOnStatementUpdate(t *testing.T) {
 	var check string
 	_ = db.QueryRow(`INSERT INTO fts_preferences(fts_preferences) VALUES('integrity-check')`).Scan(&check)
 }
+
+// A real SQLite file whose VACUUM INTO fails must not be "backed up" by a raw
+// copy of the main file (it would silently miss everything still in the
+// -wal): the backup fails loudly, so the caller aborts before its write, and
+// no partial file is left behind to be mistaken for a snapshot.
+func TestBackupFallbackIsLoud(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "palate.db")
+	corrupt := append([]byte("SQLite format 3\x00"), []byte(strings.Repeat("not a real page ", 64))...)
+	if err := os.WriteFile(dbPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backups := filepath.Join(dir, "backups")
+	got, err := BackupBefore(dbPath, backups, "consolidate")
+	if err == nil {
+		t.Fatalf("a failed VACUUM INTO on a SQLite file must be an error, got a silent backup %q", got)
+	}
+	if got != "" {
+		t.Fatalf("a failed backup must return no path, got %q", got)
+	}
+	if !strings.Contains(err.Error(), "VACUUM INTO") {
+		t.Fatalf("the error must name the failed step, got %q", err.Error())
+	}
+	if left, _ := os.ReadDir(backups); len(left) != 0 {
+		t.Fatalf("a failed backup left %d file(s) in %s", len(left), backups)
+	}
+}

@@ -17,8 +17,9 @@ import (
 // spawnCall records one spawnLearnSession invocation captured by the spy
 // installed via installSpawnSpy.
 type spawnCall struct {
-	bin  string
-	path string
+	bin             string
+	path            string
+	thenConsolidate bool
 }
 
 // installSpawnSpy swaps the package-level spawnLearnSession seam for a spy
@@ -28,8 +29,8 @@ func installSpawnSpy(t *testing.T) *[]spawnCall {
 	t.Helper()
 	calls := &[]spawnCall{}
 	orig := spawnLearnSession
-	spawnLearnSession = func(bin, transcriptPath string) error {
-		*calls = append(*calls, spawnCall{bin, transcriptPath})
+	spawnLearnSession = func(bin, transcriptPath string, thenConsolidate bool) error {
+		*calls = append(*calls, spawnCall{bin, transcriptPath, thenConsolidate})
 		return nil
 	}
 	t.Cleanup(func() { spawnLearnSession = orig })
@@ -76,6 +77,50 @@ func TestSessionStartSpawnsDetached(t *testing.T) {
 	}
 	if (*calls)[0].path != "/tmp/whatever.jsonl" {
 		t.Fatalf("spawn called with wrong transcript path: %+v", (*calls)[0])
+	}
+}
+
+// TestSessionStartSpawnsOneChild: SessionStart spawns exactly one detached
+// child. With a transcript it is the learner, carrying the due pass along
+// (`--then-consolidate`) only when the watermark says one is due; with no
+// transcript a due pass fires alone as a plain `consolidate`.
+func TestSessionStartSpawnsOneChild(t *testing.T) {
+	setupTempProject(t)
+	t.Setenv("PALATE_LLM_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("PALATE_LLM_MODEL", "x")
+	t.Setenv("PALATE_JUDGE", "0") // keep the write heuristic; the endpoint is dead
+	calls := installSpawnSpy(t)
+	consolidates := installConsolidateSpy(t)
+	if _, err := runCLI(t, "prefer", "use table-driven tests"); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+	const withTranscript = `{"session_id":"s1","transcript_path":"/tmp/whatever.jsonl"}`
+
+	// Not due (one event, every 100): a plain learner, no pass.
+	t.Setenv("PALATE_CONSOLIDATE_EVERY", "100")
+	runHook(t, withTranscript, "hook", "session-start")
+	if len(*calls) != 1 || (*calls)[0].thenConsolidate || (*calls)[0].path != "/tmp/whatever.jsonl" || *consolidates != 0 {
+		t.Fatalf("not due: want one plain learner and no consolidate child, got %+v / %d", *calls, *consolidates)
+	}
+
+	// Due (every 1): still one child, now carrying the pass.
+	t.Setenv("PALATE_CONSOLIDATE_EVERY", "1")
+	runHook(t, withTranscript, "hook", "session-start")
+	if len(*calls) != 2 || !(*calls)[1].thenConsolidate || (*calls)[1].path != "/tmp/whatever.jsonl" || *consolidates != 0 {
+		t.Fatalf("due + transcript: want one learner with thenConsolidate and no consolidate child, got %+v / %d", *calls, *consolidates)
+	}
+
+	// Due, no transcript: one plain consolidate child, no learner.
+	runHook(t, `{"session_id":"s1"}`, "hook", "session-start")
+	if len(*calls) != 2 || *consolidates != 1 {
+		t.Fatalf("due, no transcript: want exactly one consolidate child and no learner, got %+v / %d", *calls, *consolidates)
+	}
+
+	// The Stop hook stays learn-only even when a pass is due.
+	runHook(t, withTranscript, "hook", "stop")
+	if len(*calls) != 3 || (*calls)[2].thenConsolidate || *consolidates != 1 {
+		t.Fatalf("stop: want a plain learner, got %+v / %d", *calls, *consolidates)
 	}
 }
 
@@ -513,7 +558,7 @@ func TestWireDistillJudgeRoutesDistilledWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied, dropped := distill.ApplyDistilled(db, cfg, []distill.DistilledStatement{{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.7, Evidence: "again"}})
+	applied, dropped := distill.ApplyDistilled(db, cfg, []distill.DistilledStatement{{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.7, Evidence: "again"}}, "")
 	if applied != 1 || dropped != 0 {
 		t.Fatalf("applied=%d dropped=%d", applied, dropped)
 	}

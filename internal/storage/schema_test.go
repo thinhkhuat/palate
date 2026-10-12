@@ -23,7 +23,7 @@ func TestBackupBeforeKeepsFirstSnapshotInMinute(t *testing.T) {
 	if err != nil || b2 != b1 {
 		t.Fatalf("second backup in the same minute: %v %q (want %q)", err, b2, b1)
 	}
-		got, _ := os.ReadFile(b1)
+	got, _ := os.ReadFile(b1)
 	if string(got) != "first" {
 		t.Fatalf("first snapshot overwritten: %q", got)
 	}

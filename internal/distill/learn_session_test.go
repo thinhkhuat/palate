@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/learn"
@@ -432,5 +434,60 @@ func TestDistillerSeesCompareSetNotLedger(t *testing.T) {
 	const compareTopK = 20 // phase-03 req 2's constant, unexported in package learn
 	if bullets > len(profile.In)+compareTopK {
 		t.Fatalf("CURRENT PREFERENCES held %d bullets, want <= profile(%d) + compareTopK(%d)", bullets, len(profile.In), compareTopK)
+	}
+}
+
+// A backlog walk can hold learn.lock past its staleness bound; LearnSession
+// refreshes the lock before each batch's gateway call, so the hand-off to the
+// dream pass in the same process never finds an expired lock.
+func TestLearnSessionRefreshesLockBeforeEachBatch(t *testing.T) {
+	conn := testDB(t)
+	cfg := config.Default()
+	cfg.Home = t.TempDir()
+	if err := cfg.EnsureLayout(); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := cfg.StatePath("learn.lock")
+	release, ok := AcquireLearnLock(lockPath)
+	if !ok {
+		t.Fatal("could not take the lock")
+	}
+	defer release()
+	stale := time.Now().Add(-11 * time.Minute)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var ages []time.Duration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info, err := os.Stat(lockPath); err == nil {
+			mu.Lock()
+			ages = append(ages, time.Since(info.ModTime()))
+			mu.Unlock()
+		}
+		// Age the lock again, as a slow batch would.
+		_ = os.Chtimes(lockPath, stale, stale)
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: `{"preferences":[]}`}}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	gw := &Gateway{Endpoint: srv.URL, Model: "m"}
+
+	tr := Transcript{Harness: "claude_code", Path: filepath.Join(t.TempDir(), "backlog.jsonl")}
+	if _, err := LearnSession(context.Background(), conn, cfg, gw, stubReader{msgs: backlog(45)}, tr); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ages) != 3 {
+		t.Fatalf("observed %d gateway calls, want 3", len(ages))
+	}
+	for i, age := range ages {
+		if age > time.Minute {
+			t.Fatalf("lock age at batch %d's gateway call = %v, want under 1m", i+1, age)
+		}
 	}
 }

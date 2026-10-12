@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/judge"
@@ -322,17 +323,27 @@ func Lint(path string) []string {
 	return diags
 }
 
+// normStatement is the one comparison form of a statement. The renderer drops
+// a statement's trailing period (learn.BulletLine) and every statement stored
+// by the distiller ends with one, so a rendered line only pairs with its row
+// when both sides go through this: read-back of deletions and rewordings,
+// hand-edit additions matching an existing row, the first-run membership
+// seed, and Reimport.
+func normStatement(s string) string {
+	return strings.TrimSpace(strings.TrimRightFunc(s, func(r rune) bool { return r == '.' || unicode.IsSpace(r) }))
+}
+
 // statementOf strips the "- " bullet marker, the retired verbatim path's
 // "prefers:" prefix, and everything from the trailing "Confidence:" field,
-// leaving the statement itself.
+// leaving the statement itself in normStatement form.
 func statementOf(bullet string) string {
 	s := strings.TrimPrefix(bullet, "- ")
 	if idx := strings.LastIndex(s, "Confidence:"); idx >= 0 {
 		s = s[:idx]
 	}
-	s = strings.TrimRight(strings.TrimSpace(s), ".")
+	s = normStatement(s)
 	if len(s) >= 8 && strings.EqualFold(s[:8], "prefers:") {
-		s = strings.TrimSpace(s[8:])
+		s = normStatement(s[8:])
 	}
 	return s
 }
@@ -356,13 +367,11 @@ func Reimport(conn *sql.DB, cfg config.Config, path string) (int, error) {
 			if idx := strings.LastIndex(stmt, "Confidence:"); idx >= 0 {
 				stmt = strings.TrimSpace(stmt[:idx])
 			}
-			stmt = strings.TrimSuffix(strings.TrimSpace(stmt), ".")
+			stmt = normStatement(stmt)
 			if stmt == "" {
 				continue
 			}
-			var exists string
-			err := conn.QueryRow(`SELECT id FROM preferences WHERE statement=? AND valid_until IS NULL LIMIT 1`, stmt).Scan(&exists)
-			if err == nil {
+			if _, found := liveIDByStatement(conn, stmt); found {
 				continue
 			}
 			// Every imported line is judged like any other write: with a

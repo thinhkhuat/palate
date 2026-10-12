@@ -86,6 +86,10 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 		}
 		lastIndex := batch[len(batch)-1].Index
 
+		// A transcript with a long backlog can keep the learn lock held far
+		// past its staleness bound; refresh it before every batch's call.
+		_ = TouchLock(cfg.StatePath("learn.lock"))
+
 		// The compare set — the profile plus a bounded FTS slice — replaces
 		// the whole live ledger here (phase-03 req 2, review F2): the prompt
 		// no longer grows with the ledger.

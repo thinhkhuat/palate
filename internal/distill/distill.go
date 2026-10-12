@@ -89,18 +89,11 @@ var Judge func(ctx context.Context, conn *sql.DB, cfg config.Config, s Distilled
 // otherwise, with the model's own per-statement confidence as the seed
 // weight. It returns the counts applied and dropped.
 //
-// sessionKey is optional (phase-03 req 1): when the caller passes one, it
-// rides every statement's Session field into the create/reinforce event, and
-// the judge seam, so learn.SessionCounts can tell "seen again in a later
-// session" from "seen twice in the same batch". It is variadic — not a
-// required fourth parameter — solely so an existing 3-argument call site
-// outside this package keeps compiling unchanged; every caller inside this
-// package now passes one.
-func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledStatement, sessionKey ...string) (applied, dropped int) {
-	var session string
-	if len(sessionKey) > 0 {
-		session = sessionKey[0]
-	}
+// sessionKey is required (phase-03 req 1): it rides every statement's Session
+// field into the create/reinforce event, and the judge seam, so
+// learn.SessionCounts can tell "seen again in a later session" from "seen twice
+// in the same batch". A caller with no real session passes "".
+func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledStatement, session string) (applied, dropped int) {
 	for _, s := range statements {
 		s.Session = session
 		if scan := safety.Scan(s.Statement); scan.Flagged {

@@ -40,9 +40,9 @@ type verdict struct {
 }
 
 func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, in Input) (learn.Assessment, error) {
-	// The model compares against the whole active profile, not one category:
-	// a paraphrase filed elsewhere must still be recognised (Command Code's
-	// learner reads every taste file). The hint only seeds the category.
+	// The model compares against the compare set (the profile plus the best
+	// full-text matches outside it), not one category: a paraphrase filed
+	// elsewhere must still be recognised. The hint only seeds the category.
 	hint := in.Category
 	if hint == "" {
 		hint = learn.InferCategoryFromStatement(in.Statement)

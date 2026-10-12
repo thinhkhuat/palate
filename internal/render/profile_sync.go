@@ -213,7 +213,7 @@ func seedMembershipFromDisk(conn *sql.DB, cfg config.Config) (map[string]bool, e
 		if rows.Scan(&id, &stmt) != nil {
 			continue
 		}
-		if stmts[stmt] {
+		if stmts[normStatement(stmt)] {
 			out[id] = true
 		}
 	}

@@ -103,12 +103,12 @@ func inferCategory(s string) string {
 }
 
 var categoryKeywords = map[string][]string{
-	"Testing":       {"test", "spec", "mock", "assert", "coverage"},
-	"Imports":       {"import", "require", "export"},
+	"Testing":        {"test", "spec", "mock", "assert", "coverage"},
+	"Imports":        {"import", "require", "export"},
 	"Error Handling": {"error", "throw", "catch", "handle"},
-	"Naming":        {"naming", "variable", "function", "camel", "snake"},
-	"Types":         {"type", "interface", "generic", "struct"},
-	"Async":         {"async", "await", "promise", "callback"},
+	"Naming":         {"naming", "variable", "function", "camel", "snake"},
+	"Types":          {"type", "interface", "generic", "struct"},
+	"Async":          {"async", "await", "promise", "callback"},
 }
 
 func InferCategoryFromStatement(stmt string) string {

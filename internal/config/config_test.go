@@ -289,7 +289,7 @@ func TestConfigProfileDefaults(t *testing.T) {
 	if !d.Profile.ExcludeProjectSpecific || !d.Profile.ReadBackEdits || !d.Profile.PromptBlock {
 		t.Fatalf("profile defaults must all be on: %+v", d.Profile)
 	}
-	if d.Consolidate.TimeoutSeconds != 120 || d.Consolidate.StaleCandidateDays != 30 {
+	if d.Consolidate.TimeoutSeconds != 300 || d.Consolidate.StaleCandidateDays != 30 {
 		t.Fatalf("consolidate defaults: %+v", d.Consolidate)
 	}
 	if d.TokenBudgets.PrewarmGoal != 0 {
@@ -308,7 +308,7 @@ func TestConfigProfileDefaults(t *testing.T) {
 	if !cfg.Profile.ExcludeProjectSpecific || !cfg.Profile.ReadBackEdits || !cfg.Profile.PromptBlock {
 		t.Fatalf("YAML without profile keys must keep defaults: %+v", cfg.Profile)
 	}
-	if cfg.Consolidate.TimeoutSeconds != 120 || cfg.Consolidate.StaleCandidateDays != 30 {
+	if cfg.Consolidate.TimeoutSeconds != 300 || cfg.Consolidate.StaleCandidateDays != 30 {
 		t.Fatalf("YAML without consolidate keys must keep defaults: %+v", cfg.Consolidate)
 	}
 

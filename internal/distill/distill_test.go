@@ -51,7 +51,7 @@ func TestApplyDistilledDropsFlagged(t *testing.T) {
 	statements := []DistilledStatement{
 		{Statement: "Uses API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890 in scripts.", Category: "General", Confidence: 0.8, Evidence: "pasted a key"},
 	}
-	applied, dropped := ApplyDistilled(db, cfg, statements)
+	applied, dropped := ApplyDistilled(db, cfg, statements, "")
 	if applied != 0 || dropped != 1 {
 		t.Fatalf("applied=%d dropped=%d, want 0,1", applied, dropped)
 	}
@@ -72,7 +72,7 @@ func TestApplyDistilledTrustTier(t *testing.T) {
 	statements := []DistilledStatement{
 		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.9, Evidence: "said so in chat"},
 	}
-	applied, dropped := ApplyDistilled(db, cfg, statements)
+	applied, dropped := ApplyDistilled(db, cfg, statements, "")
 	if applied != 1 || dropped != 0 {
 		t.Fatalf("applied=%d dropped=%d, want 1,0", applied, dropped)
 	}
@@ -98,7 +98,7 @@ func TestApplyDistilledReviewMode(t *testing.T) {
 	statements := []DistilledStatement{
 		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.9, Evidence: "said so in chat"},
 	}
-	applied, dropped := ApplyDistilled(db, cfg, statements)
+	applied, dropped := ApplyDistilled(db, cfg, statements, "")
 	if applied != 1 || dropped != 0 {
 		t.Fatalf("applied=%d dropped=%d, want 1,0", applied, dropped)
 	}
@@ -171,7 +171,7 @@ func TestApplyDistilledNeverStoresRawDiffLine(t *testing.T) {
 	}
 
 	cfg := config.Default()
-	applied, dropped := ApplyDistilled(db, cfg, result.Statements)
+	applied, dropped := ApplyDistilled(db, cfg, result.Statements, "")
 	if applied != 0 || dropped != 1 {
 		t.Fatalf("applied=%d dropped=%d, want 0,1 (a statement identical to its own evidence line must be refused)", applied, dropped)
 	}
@@ -239,7 +239,7 @@ func TestApplyDistilledProjectFlag(t *testing.T) {
 	stmt := "Uses a Makefile target named build-linux."
 	applied, dropped := ApplyDistilled(db, cfg, []DistilledStatement{
 		{Statement: stmt, Category: "Tooling", Confidence: 0.8, Evidence: "said so", Project: true},
-	})
+	}, "")
 	if applied != 1 || dropped != 0 {
 		t.Fatalf("applied=%d dropped=%d, want 1,0", applied, dropped)
 	}
@@ -286,7 +286,7 @@ func TestApplyDistilledThreadsSession(t *testing.T) {
 
 	applied, _ = ApplyDistilled(db, cfg, []DistilledStatement{
 		{Statement: "Prefers tabs.", Category: "Formatting", Confidence: 0.8, Evidence: "e"},
-	})
+	}, "")
 	if applied != 1 {
 		t.Fatalf("applied=%d, want 1", applied)
 	}
@@ -356,7 +356,7 @@ func TestApplyDistilledJudgeSeam(t *testing.T) {
 		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.7, Evidence: "said so"},
 		{Statement: "Uses API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890 in scripts.", Category: "General", Confidence: 0.8, Evidence: "pasted a key"},
 	}
-	applied, dropped := ApplyDistilled(db, cfg, statements)
+	applied, dropped := ApplyDistilled(db, cfg, statements, "")
 	if applied != 1 || dropped != 1 {
 		t.Fatalf("applied=%d dropped=%d, want 1,1", applied, dropped)
 	}

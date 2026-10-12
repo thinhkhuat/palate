@@ -343,10 +343,17 @@ func BackupBefore(dbPath, backupDir, label string) (string, error) {
 		return "", err
 	}
 	if err := vacuumBackup(dbPath, dst); err != nil {
-		// Not a valid SQLite file at dbPath (a test fixture, a genuinely
-		// corrupt store) — a raw copy we can still restore beats no backup
-		// at all, so fall back instead of failing the caller's destructive
-		// verb outright.
+		// VACUUM INTO may have left a partial file; it must never be taken
+		// for a snapshot.
+		_ = os.Remove(dst)
+		// A real SQLite file that cannot be vacuumed fails the backup: a raw
+		// copy of the main file misses whatever still sits in the -wal, and
+		// the caller's destructive write must not run on a backup that is
+		// silently incomplete. Only a file that is not a SQLite database at
+		// all (a test fixture) has no WAL to lose, so a raw copy is faithful.
+		if isSQLiteFile(dbPath) {
+			return "", fmt.Errorf("backup of %s: VACUUM INTO failed, not falling back to a raw copy that would miss the WAL: %w", dbPath, err)
+		}
 		if cerr := rawCopyBackup(dbPath, dst); cerr != nil {
 			return "", cerr
 		}
@@ -370,6 +377,20 @@ func vacuumBackup(dbPath, dst string) error {
 	q := "VACUUM INTO '" + strings.ReplaceAll(dst, "'", "''") + "'"
 	_, err = conn.Exec(q)
 	return err
+}
+
+// isSQLiteFile reports whether path starts with the SQLite file header.
+func isSQLiteFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 16)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return false
+	}
+	return string(head) == "SQLite format 3\x00"
 }
 
 func rawCopyBackup(dbPath, dst string) error {

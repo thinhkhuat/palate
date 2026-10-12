@@ -22,14 +22,25 @@ const (
 // is the only state file this subsystem writes: there is no separate status
 // file and no "notified" flag.
 type Attempt struct {
-	At         string `json:"at"`
-	Trigger    string `json:"trigger"`
-	Outcome    string `json:"outcome"` // applied | proposals | nothing-to-do | skipped-lock | error
-	Batches    int    `json:"batches,omitempty"`
-	Actions    int    `json:"actions,omitempty"`
-	Retired    int    `json:"retired,omitempty"`
-	Error      string `json:"error,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	At      string `json:"at"`
+	Trigger string `json:"trigger"`
+	Outcome string `json:"outcome"` // applied | proposals | nothing-to-do | skipped-lock | error
+	Batches int    `json:"batches,omitempty"`
+	// Actions is every action the model returned; Applied + Proposed + Skipped
+	// == Actions, and SkipReasons splits Skipped by why.
+	Actions     int            `json:"actions,omitempty"`
+	Applied     int            `json:"applied,omitempty"`
+	Proposed    int            `json:"proposed,omitempty"`
+	Skipped     int            `json:"skipped,omitempty"`
+	SkipReasons map[string]int `json:"skip_reasons,omitempty"`
+	// BatchMS is each batch's gateway wait in ms (retries included), in order;
+	// DurationMS stays the whole attempt.
+	BatchMS []int64 `json:"batch_ms,omitempty"`
+	// ApplyErrors samples (capped) the actions that failed or were malformed.
+	ApplyErrors []ApplyError `json:"apply_errors,omitempty"`
+	Retired     int          `json:"retired,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	DurationMS  int64        `json:"duration_ms,omitempty"`
 	// EventID is MAX(events.id) at the time of the attempt — the caller (it
 	// holds the connection) fills this in before calling RecordAttempt.
 	EventID int64 `json:"event_id"`
@@ -48,6 +59,14 @@ func RecordAttempt(cfg config.Config, a Attempt) error {
 		a.At = time.Now().UTC().Format(time.RFC3339)
 	}
 	a.Error = redactGatewaySecrets(cfg, a.Error)
+	if len(a.ApplyErrors) > 0 {
+		redacted := make([]ApplyError, len(a.ApplyErrors))
+		for i, e := range a.ApplyErrors {
+			e.Error = redactGatewaySecrets(cfg, e.Error)
+			redacted[i] = e
+		}
+		a.ApplyErrors = redacted
+	}
 	path := AttemptLogPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

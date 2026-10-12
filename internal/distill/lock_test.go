@@ -193,3 +193,94 @@ func TestLearnLockFreshLockNeverLeavesDisk(t *testing.T) {
 		t.Fatalf("lock file was missing from disk %d times while held", n)
 	}
 }
+
+// A crash inside the takeover window leaves the guard file behind. It must not
+// block stale takeovers forever: once the guard is itself stale, one attempt
+// clears it and the next takes the stale lock over.
+func TestLearnLockClearsStaleTakeoverGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "learn.lock")
+	old := time.Now().Add(-learnLockStaleAfter - time.Minute)
+	for _, p := range []string{path, path + ".takeover"} {
+		if err := os.WriteFile(p, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := AcquireLearnLock(path); ok {
+		t.Fatal("the attempt that finds a leftover guard only clears it")
+	}
+	release, ok := AcquireLearnLock(path)
+	if !ok {
+		t.Fatal("the next attempt must take the stale lock over")
+	}
+	release()
+	if _, err := os.Stat(path + ".takeover"); !os.IsNotExist(err) {
+		t.Fatalf("no guard file may remain, stat err=%v", err)
+	}
+}
+
+// A holder whose lock was taken over as stale must not delete the new
+// holder's lock when it finally releases.
+func TestLearnLockReleaseOnlyRemovesOwnLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "learn.lock")
+	releaseA, ok := AcquireLearnLock(path)
+	if !ok {
+		t.Fatal("first acquire must succeed")
+	}
+	old := time.Now().Add(-11 * time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	releaseB, ok := AcquireLearnLock(path)
+	if !ok {
+		t.Fatal("a stale lock must be taken over")
+	}
+	releaseA() // the slow first holder finishes late
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the first holder's release deleted the second holder's lock: %v", err)
+	}
+	if _, got := AcquireLearnLock(path); got {
+		t.Fatal("a third acquirer got in while the second holder still holds the lock")
+	}
+	releaseB()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the owner's release must remove its lock, stat err = %v", err)
+	}
+}
+
+// A racer that saw a stale takeover guard must not delete a fresh guard that
+// another racer created after the staleness check.
+func TestStaleGuardRemovalSparesFreshGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "learn.lock")
+	guard := path + ".takeover"
+	old := time.Now().Add(-11 * time.Minute)
+	for _, p := range []string{path, guard} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := afterStaleGuardCheck
+	t.Cleanup(func() { afterStaleGuardCheck = prev })
+	afterStaleGuardCheck = func() {
+		// Another racer clears the stale guard and creates its own, just now.
+		_ = os.Remove(guard)
+		if err := os.WriteFile(guard, []byte("fresh"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, ok := AcquireLearnLock(path); ok {
+		t.Fatal("a racer that finds the guard busy must not acquire the lock")
+	}
+	b, err := os.ReadFile(guard)
+	if err != nil || string(b) != "fresh" {
+		t.Fatalf("the fresh guard must survive the stale-guard cleanup: content=%q err=%v", b, err)
+	}
+	if left, _ := filepath.Glob(guard + ".stale-*"); len(left) != 0 {
+		t.Fatalf("cleanup left temporary files behind: %v", left)
+	}
+}

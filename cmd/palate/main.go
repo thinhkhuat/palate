@@ -446,7 +446,7 @@ func cmdSleep() *cobra.Command {
 						if rep, cerr := runConsolidatePass(cmd.Context(), cfg, db, "sleep", consolidate.RunOptions{}, nil); cerr != nil {
 							fmt.Fprintln(os.Stderr, "sleep: consolidation skipped:", cerr)
 						} else {
-							fmt.Printf("consolidated: %d actions (%d applied, %d proposed) mode=%s\n", rep.Actions, rep.Applied, rep.Proposed, rep.Mode)
+							fmt.Printf("consolidated: %s mode=%s\n", rep.Summary(), rep.Mode)
 						}
 						release()
 					} else {
@@ -685,25 +685,37 @@ func cmdPush() *cobra.Command {
 // or edited outside Palate leaves the render stale — nothing marked it
 // dirty) and prints it. The slash command /palate:taste calls this.
 //
+// --cut and --path leave a pending hold alone and print one warning line.
 // --accept-edits and plain `taste` on a pending hold resolve it first
 // (accepting stores the held additions/deletions, plain discards them) and
 // remove the stale on-disk file so the Sync right after starts clean instead
 // of re-detecting the very edit that was just resolved.
 func cmdTaste() *cobra.Command {
-	var pathOnly, cut, acceptEdits bool
+	var pathOnly, cut, acceptEdits, yes bool
 	c := &cobra.Command{
-		Use:   "taste",
-		Short: "Re-sync and print the auto-maintained TASTE.md",
+		Use:          "taste",
+		Short:        "Re-sync and print the auto-maintained TASTE.md",
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if yes && !acceptEdits {
+				return fmt.Errorf("--yes only goes with --accept-edits")
+			}
 			cfg := loadConfig()
 			db := openDB(cfg)
 			defer storage.Close()
 			if acceptEdits {
-				if err := render.AcceptHeldEdits(db, cfg); err != nil {
+				if err := render.AcceptHeldEdits(db, cfg, yes); err != nil {
 					return err
 				}
 			} else if render.HoldPending(cfg) {
-				if err := render.DiscardHold(cfg); err != nil {
+				if cut || pathOnly {
+					// A read-only view never resolves a hold.
+					msg := "palate: a hand edit to TASTE.md is held and was left alone; run `palate taste --accept-edits` to apply it or plain `palate taste` to discard it"
+					if !render.HoldAcceptable(cfg) {
+						msg = "palate: a hand edit to TASTE.md is held and was left alone; it cannot be applied safely, run plain `palate taste` to discard it"
+					}
+					fmt.Fprintln(os.Stderr, msg)
+				} else if err := render.DiscardHold(cfg); err != nil {
 					return err
 				}
 			} else if err := render.ReadBack(db, cfg, cfg.TastePath()); err != nil {
@@ -729,7 +741,8 @@ func cmdTaste() *cobra.Command {
 	}
 	c.Flags().BoolVar(&pathOnly, "path", false, "print only the file path")
 	c.Flags().BoolVar(&cut, "cut", false, "list every live row excluded from the profile, with its id and reason")
-	c.Flags().BoolVar(&acceptEdits, "accept-edits", false, "apply a held hand-edit (mass deletion, agent edit, or unverifiable base) that read-back could not apply safely on its own")
+	c.Flags().BoolVar(&acceptEdits, "accept-edits", false, "apply a held hand-edit (large addition, mass deletion or agent edit) that read-back could not apply safely on its own; a hold with no verifiable base can only be discarded")
+	c.Flags().BoolVar(&yes, "yes", false, "with --accept-edits: also bring back lines that have left the profile, and accept more than 10 added lines, for any held edit (every such line is listed; without --yes nothing is applied)")
 	return c
 }
 
@@ -927,8 +940,8 @@ func cmdConsolidate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("consolidated %d rows: %d actions (%d applied, %d proposed, %d skipped by guards) mode=%s watermark=event #%d\n",
-				rep.Rows, rep.Actions, rep.Applied, rep.Proposed, rep.Skipped, rep.Mode, rep.Watermark)
+			fmt.Printf("consolidated %d rows: %s mode=%s watermark=event #%d\n",
+				rep.Rows, rep.Summary(), rep.Mode, rep.Watermark)
 			return nil
 		},
 	}
@@ -983,25 +996,66 @@ func recordAttempt(cfg config.Config, db *sql.DB, trigger string, rep consolidat
 	if combinedErr != nil {
 		errStr = combinedErr.Error()
 	}
-	_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
-		Trigger:    trigger,
-		Outcome:    outcome,
-		Batches:    rep.Batches,
-		Actions:    rep.Actions,
-		Retired:    rep.Retired,
-		Error:      errStr,
-		DurationMS: time.Since(start).Milliseconds(),
-		EventID:    consolidate.MaxEventID(db),
+	withNoticeLock(cfg, func() {
+		_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
+			Trigger:     trigger,
+			Outcome:     outcome,
+			Batches:     rep.Batches,
+			Actions:     rep.Actions,
+			Applied:     rep.Applied,
+			Proposed:    rep.Proposed,
+			Skipped:     rep.Skipped,
+			SkipReasons: rep.SkipReasons,
+			BatchMS:     rep.BatchMS,
+			ApplyErrors: rep.ApplyErrors,
+			Retired:     rep.Retired,
+			Error:       errStr,
+			DurationMS:  time.Since(start).Milliseconds(),
+			EventID:     attemptEventID(db, outcome),
+		})
 	})
+}
+
+// attemptEventID is the event_id stamped on an attempt record (req 8). A
+// failed or skipped attempt first appends a consolidate_attempt event, so its
+// id lies strictly past the notice cursor of any notice before it and the next
+// notice reports it exactly once; other outcomes just take MAX(events.id).
+func attemptEventID(db *sql.DB, outcome string) int64 {
+	if outcome == "error" || outcome == "skipped-lock" {
+		if err := storage.AppendEvent(db, "consolidate_attempt", fmt.Sprintf(`{"outcome":%q}`, outcome)); err != nil {
+			// No event of its own (a busy store): stamp the entry one past the
+			// head, so it can never sit at or below a notice cursor and is
+			// reported by the first notice after any later event.
+			return consolidate.MaxEventID(db) + 1
+		}
+	}
+	return consolidate.MaxEventID(db)
+}
+
+// withNoticeLock runs fn (an attempt's event append and log write) while
+// holding notice.lock, the lock a notice holds from reading the event head
+// to reading the log, so the pair is never seen half done. It waits a couple
+// of seconds for a notice in flight and then goes ahead without the lock.
+func withNoticeLock(cfg config.Config, fn func()) {
+	for i := 0; i < 100; i++ {
+		if release, ok := distill.AcquireLearnLock(cfg.StatePath("notice.lock")); ok {
+			defer release()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fn()
 }
 
 // recordSkippedLock records a busy-lock attempt (req 10a): no pass ran at
 // all, so there is nothing else to report beyond the outcome itself.
 func recordSkippedLock(cfg config.Config, db *sql.DB, trigger string) {
-	_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
-		Trigger: trigger,
-		Outcome: "skipped-lock",
-		EventID: consolidate.MaxEventID(db),
+	withNoticeLock(cfg, func() {
+		_ = consolidate.RecordAttempt(cfg, consolidate.Attempt{
+			Trigger: trigger,
+			Outcome: "skipped-lock",
+			EventID: attemptEventID(db, "skipped-lock"),
+		})
 	})
 }
 

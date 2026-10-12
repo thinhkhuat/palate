@@ -381,8 +381,10 @@ func TestReadBackHoldsRenderLock(t *testing.T) {
 }
 
 // TestNoShaEditWithBaseIsHeldNotLost: a base exists, but the on-disk file
-// has been replaced with an older-format (no sha) edit — Sync must hold it,
-// never overwrite it, and --accept-edits (AcceptHeldEdits) must apply it.
+// has been replaced with an older-format (no sha) edit — Sync must hold it and
+// never overwrite it. Such a hold is discard-only: --accept-edits refuses it
+// (the old binary's file is a full dump, not a hand edit), and discarding it
+// lets the next Sync render the new format.
 func TestNoShaEditWithBaseIsHeldNotLost(t *testing.T) {
 	db, cfg := newHomeCfg(t)
 	mustSync(t, db, cfg)
@@ -392,6 +394,9 @@ func TestNoShaEditWithBaseIsHeldNotLost(t *testing.T) {
 	mustSync(t, db, cfg)
 	if !HoldPending(cfg) {
 		t.Fatal("a no-sha edit against a known base must hold")
+	}
+	if HoldAcceptable(cfg) {
+		t.Fatal("an old-format hold must not be acceptable")
 	}
 	onDisk, err := os.ReadFile(cfg.TastePath())
 	if err != nil {
@@ -404,18 +409,18 @@ func TestNoShaEditWithBaseIsHeldNotLost(t *testing.T) {
 		t.Fatal("nothing should be applied yet")
 	}
 
-	if err := AcceptHeldEdits(db, cfg); err != nil {
-		t.Fatalf("AcceptHeldEdits: %v", err)
+	if err := AcceptHeldEdits(db, cfg, false); err == nil {
+		t.Fatal("AcceptHeldEdits must refuse an old-format hold")
 	}
-	if HoldPending(cfg) {
-		t.Fatal("accepting must clear the hold")
+	if !HoldPending(cfg) || anyPreferenceCount(t, db, "Prefers legacy-format edit") != 0 {
+		t.Fatal("a refused accept must leave the hold in place and apply nothing")
 	}
-	if livePreferenceCount(t, db, "Prefers legacy-format edit") != 1 {
-		t.Fatal("accepting must apply the held edit")
+	if err := DiscardHold(cfg); err != nil {
+		t.Fatal(err)
 	}
 	mustSync(t, db, cfg)
-	if !strings.Contains(readFile(t, cfg.TastePath()), "Prefers legacy-format edit") {
-		t.Fatal("the next Sync must render the accepted edit cleanly")
+	if HoldPending(cfg) || strings.Contains(readFile(t, cfg.TastePath()), "Prefers legacy-format edit") {
+		t.Fatal("discard must clear the hold and the next Sync must render the profile without the old-format line")
 	}
 }
 
@@ -482,7 +487,7 @@ func TestAssistantEditOfTasteIsHeld(t *testing.T) {
 	if n := anyPreferenceCount(t, db, "Prefers an assistant edit"); n != 0 {
 		t.Fatalf("nothing must be applied from an assistant edit, got %d rows", n)
 	}
-	if err := AcceptHeldEdits(db, cfg); err != nil {
+	if err := AcceptHeldEdits(db, cfg, false); err != nil {
 		t.Fatal(err)
 	}
 	if livePreferenceCount(t, db, "Prefers an assistant edit") != 1 {

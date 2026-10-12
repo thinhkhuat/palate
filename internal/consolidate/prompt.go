@@ -1,9 +1,9 @@
 package consolidate
 
 // SystemPrompt asks the model to make the profile fit its token budget,
-// merging duplicates, tightening wording and retiring what does not belong —
-// budget-seeking, not "prefer doing nothing" (req 2; the old "smallest set of
-// actions" / "prefer doing nothing over guessing" wording is gone).
+// merging duplicates, tightening wording and retiring what does not belong
+// (req 2). It is budget-seeking: the model is told the target and the current
+// size, not to minimise its own edits.
 const SystemPrompt = `You are the taste consolidator for Palate, a tool that learns a developer's
 coding preferences. You receive the user's <profile> (every row already in
 the maintained profile) and a <candidates> batch (live rows that are not),

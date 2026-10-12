@@ -50,7 +50,7 @@ type StatementInput struct {
 type StatsInput struct{}
 
 type ForgetInput struct {
-	ID string `json:"id" jsonschema:"id of the memory or preference to delete, as printed by palate_recall"`
+	ID string `json:"id" jsonschema:"id of the memory or preference to forget, as printed by palate_recall; a preference is retired, not erased, and the owner can restore it with the palate restore command"`
 }
 
 // flushed wraps a write tool so TASTE.md is re-rendered right after the
@@ -65,14 +65,14 @@ func flushed[In any](h func(context.Context, *mcp.CallToolRequest, In) (*mcp.Cal
 }
 
 func registerTools(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_recall", Description: "Recall preferences and memories matching a query"}, handleRecall)
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_recall", Description: "Recall preferences and memories matching a query; a preference that is also in the budgeted taste profile (TASTE.md) is marked [profile]"}, handleRecall)
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_remember", Description: "Store a memory"}, flushed(handleRemember))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_correct", Description: "Record a correction: tried, wrong_because, fix, trigger_context"}, flushed(handleCorrect))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_prefer", Description: "Record an explicit preference"}, flushed(handlePrefer))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_reject", Description: "Record an explicit rejection"}, flushed(handleReject))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_accept", Description: "Record an explicit acceptance"}, flushed(handleAccept))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_stats", Description: "Show capture and storage stats"}, handleStats)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory or preference by id"}, flushed(handleForget))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory (deleted) or a preference (retired, restorable with the palate restore command; there is no MCP restore tool) by id"}, flushed(handleForget))
 }
 
 func textResult(msg string) *mcp.CallToolResult {

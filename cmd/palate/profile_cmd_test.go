@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -210,6 +211,38 @@ func TestNoticeShowsPendingHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// More than the line cap in one edit: held, with the base intact, so the
+	// owner can accept it.
+	var addition strings.Builder
+	addition.WriteString("\n## Testing\n\n")
+	for i := 0; i < 11; i++ {
+		fmt.Fprintf(&addition, "- Prefers hand-added row %d while held. Confidence: 0.60\n", i)
+	}
+	if err := os.WriteFile(path, append(b, []byte(addition.String())...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runHook(t, `{"session_id":"s2","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+	if !strings.Contains(out, "a hand edit to TASTE.md is held — run `palate taste --accept-edits` to apply it (it lists every retired line it would bring back and every line beyond the 10-line limit, and needs `--yes` for those) or `palate taste` to discard it (a copy is kept in state/).") {
+		t.Fatalf("expected the notice to offer accept and discard for the pending hold: %s", out)
+	}
+}
+
+// A hold with no verifiable base (the old binary's full dump, a missing base)
+// can only be discarded, so the notice must not tell the owner to accept it.
+func TestNoticeOldFormatHoldSaysDiscardOnly(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "prefer", "Prefers a seed row to render the file"); err != nil {
+		t.Fatal(err)
+	}
+	runHook(t, `{"session_id":"s1","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
+
+	cfg := loadConfig()
+	path := cfg.TastePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	addition := "\n## Testing\n\n- Prefers a hand-added row while held. Confidence: 0.60\n"
 	if err := os.WriteFile(path, append(b, []byte(addition)...), 0o644); err != nil {
 		t.Fatal(err)
@@ -221,8 +254,11 @@ func TestNoticeShowsPendingHold(t *testing.T) {
 	}
 
 	out := runHook(t, `{"session_id":"s2","transcript_path":"/tmp/none.jsonl"}`, "hook", "session-start")
-	if !strings.Contains(out, "accept-edits") {
-		t.Fatalf("expected the notice to mention the pending hold: %s", out)
+	if !strings.Contains(out, "cannot be applied safely is held") || !strings.Contains(out, "run `palate taste` to discard it (a copy is kept in state/).") {
+		t.Fatalf("expected the notice to offer discard only: %s", out)
+	}
+	if strings.Contains(out, "accept-edits") {
+		t.Fatalf("the notice must not offer to accept a discard-only hold: %s", out)
 	}
 }
 
@@ -233,4 +269,11 @@ func lineWith(content, substr string) string {
 		}
 	}
 	return ""
+}
+
+func TestTasteYesNeedsAcceptEdits(t *testing.T) {
+	setupTempProject(t)
+	if _, err := runCLI(t, "taste", "--yes"); err == nil || !strings.Contains(err.Error(), "--accept-edits") {
+		t.Fatalf("--yes alone must be refused and name --accept-edits, got %v", err)
+	}
 }

@@ -225,7 +225,7 @@ func Default() Config {
 			Imported:           0.4,
 		},
 		TokenBudgets: TokenBudgets{
-			PrewarmSession: 2000, // whole profile; only ever drops whole lines (decisions row 17)
+			PrewarmSession: 2000, // profile budget, headers included; selection fills it with whole rows (decisions row 35)
 			PrewarmGoal:    0,    // 0 = off (the per-prompt goal block is removed by default, §6.6); any value above 0 turns it back on
 			Recall:         1000,
 			IndexLines:     200,
@@ -254,7 +254,7 @@ func Default() Config {
 		Distill:     Distill{Mode: "auto"},
 		Render:      Render{Auto: true},
 		Judge:       Judge{Enabled: true},
-		Consolidate: Consolidate{EveryEvents: 25, TimeoutSeconds: 120, StaleCandidateDays: 30},
+		Consolidate: Consolidate{EveryEvents: 25, TimeoutSeconds: 300, StaleCandidateDays: 30},
 		Profile:     Profile{ExcludeProjectSpecific: true, ReadBackEdits: true, PromptBlock: true},
 	}
 }
