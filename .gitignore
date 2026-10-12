@@ -23,3 +23,6 @@ __pycache__/
 
 # Reticle (web-app verifier) per-machine state — palate is a CLI; nothing to commit.
 /.reticle/
+
+# Raw Command Code traffic captures (full session context, local only)
+plans/reports/*/_RESEARCH_ARTIFACTS/cc-capture/
