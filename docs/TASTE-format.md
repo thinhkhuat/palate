@@ -33,6 +33,12 @@
 
 ## Editing the file by hand
 
+> **Assessment period (since 2026-10-13, decisions row 51):** treat this file as
+> generated-only. Change taste with `palate prefer`, `palate forget` and
+> `palate restore`, not by editing the file. A shell edit made by an assistant
+> is read back as your own stated preference. No setting enforces this; if no
+> later decision is recorded, the approach was found good.
+
 Edits are read back into the ledger (`profile.read_back_edits`, on by default;
 code: `internal/render/readback.go`). The read-back runs at SessionStart, at
 UserPromptSubmit, in `palate taste` and before each render, under the render
