@@ -20,7 +20,7 @@ import (
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.5.2"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.6.0"}, nil)
 	registerTools(s)
 	return s
 }
