@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/distill"
-	"github.com/thinhkhuat/palate/internal/learn"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
 
@@ -57,19 +57,26 @@ func gatewayReplying(t *testing.T, actions []Action) *distill.Gateway {
 	return gw
 }
 
+// seed inserts distilled, one-session rows (candidates, rewritable text) aged
+// past the 24 h window. STATED rows would be profile members whose text is
+// never rewritten, which is not what these tests exercise.
 func seed(t *testing.T, db *sql.DB, cfg config.Config, stmts ...string) []string {
 	t.Helper()
+	old := time.Now().UTC().Add(-48 * time.Hour)
 	var ids []string
-	for _, s := range stmts {
-		p, err := learn.ApplySignal(db, cfg, learn.Signal{Type: learn.SignalExplicitPrefer, Statement: s, Category: "Testing"}, nil)
-		if err != nil {
-			t.Fatal(err)
+	for i, st := range stmts {
+		id := fmt.Sprintf("seed%02d", len(ids)+i)
+		for {
+			var n int
+			_ = db.QueryRow(`SELECT count(*) FROM preferences WHERE id=?`, id).Scan(&n)
+			if n == 0 {
+				break
+			}
+			id += "x"
 		}
-		ids = append(ids, p.ID)
+		insertRow(t, db, rowSpec{id: id, stmt: st, reinforced: old, created: time.Now().UTC()})
+		ids = append(ids, id)
 	}
-	// age every row past the 24 h retire guard
-	old := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
-	_, _ = db.Exec(`UPDATE preferences SET last_reinforced_at=?`, old)
 	return ids
 }
 
@@ -86,13 +93,13 @@ func TestConsolidateAppliesEveryActionType(t *testing.T) {
 	ids := seed(t, db, cfg, "use table-driven tests", "table driven tests are preferred", "name tests after the case", "avoid sleep in tests", "use golden files", "prefer subtests", "keep tests fast", "mock the clock", "assert with cmp", "one file per package", "no global state", "fail fast", "use t.Helper", "parallel where safe", "no sleep-based sync")
 	gw := gatewayReplying(t, []Action{
 		{Type: "merge", IDs: []string{ids[0], ids[1]}, Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.85, Reason: "same"},
-		{Type: "rewrite", ID: ids[2], Statement: "Names subtests after the case they cover.", Reason: "third person"},
+		{Type: "rewrite", ID: ids[2], Statement: "Names tests per case.", Reason: "third person"},
 		{Type: "rescore", ID: ids[3], Confidence: 0.9, Reason: "reinforced often"},
 		{Type: "retire", ID: ids[4], Reason: "one-off"},
 	})
 	dirty := 0
 	storage.SetOnDirtyFlush(func(*sql.DB) { dirty++ })
-	rep, err := Run(context.Background(), db, cfg, gw)
+	rep, err := Run(context.Background(), db, cfg, gw, RunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +116,7 @@ func TestConsolidateAppliesEveryActionType(t *testing.T) {
 		t.Fatalf("merge survivor: %q %.2f", stmt, conf)
 	}
 	_ = db.QueryRow(`SELECT statement FROM preferences WHERE id=?`, ids[2]).Scan(&stmt)
-	if stmt != "Names subtests after the case they cover." {
+	if stmt != "Names tests per case." {
 		t.Fatalf("rewrite: %q", stmt)
 	}
 	_ = db.QueryRow(`SELECT confidence FROM preferences WHERE id=?`, ids[3]).Scan(&conf)
@@ -141,8 +148,8 @@ func TestConsolidateReviewModeProposesOnly(t *testing.T) {
 	db, cfg := testStore(t)
 	cfg.Distill.Mode = "review"
 	ids := seed(t, db, cfg, "use table-driven tests", "keep tests fast", "use golden files")
-	gw := gatewayReplying(t, []Action{{Type: "rewrite", ID: ids[0], Statement: "Prefers table-driven tests.", Reason: "r"}})
-	rep, err := Run(context.Background(), db, cfg, gw)
+	gw := gatewayReplying(t, []Action{{Type: "rewrite", ID: ids[0], Statement: "Prefers table tests.", Reason: "r"}})
+	rep, err := Run(context.Background(), db, cfg, gw, RunOptions{})
 	if err != nil || rep.Mode != "review" || rep.Proposed != 1 || rep.Applied != 0 {
 		t.Fatalf("report: %+v err=%v", rep, err)
 	}
@@ -156,24 +163,25 @@ func TestConsolidateReviewModeProposesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.QueryRow(`SELECT statement FROM preferences WHERE id=?`, ids[0]).Scan(&stmt)
-	if stmt != "Prefers table-driven tests." {
+	if stmt != "Prefers table tests." {
 		t.Fatalf("promoting the proposal must apply it: %q", stmt)
 	}
 }
 
-// TestConsolidateGuards: a recently reinforced row is never retired, unknown
-// ids are skipped, and a pass touching > 40 % is downgraded to proposals.
+// TestConsolidateGuards: a shielded row (two sessions, reinforced now) is never
+// retired, unknown ids are skipped, and a pass touching > 40 % is downgraded
+// to proposals.
 func TestConsolidateGuards(t *testing.T) {
 	db, cfg := testStore(t)
 	ids := seed(t, db, cfg, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
-	_, _ = db.Exec(`UPDATE preferences SET last_reinforced_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339), ids[0])
+	insertRow(t, db, rowSpec{id: "shield", stmt: "twice seen", sessions: []string{"s1", "s2"}})
 	gw := gatewayReplying(t, []Action{
-		{Type: "retire", ID: ids[0], Reason: "fresh — must be blocked"},
+		{Type: "retire", ID: "shield", Reason: "fresh and repeated — must be blocked"},
 		{Type: "retire", ID: "no-such-id", Reason: "unknown"},
 		{Type: "rescore", ID: ids[1], Confidence: 0.6},
 	})
-	rep, err := Run(context.Background(), db, cfg, gw)
-	if err != nil || rep.Skipped != 2 || rep.Applied != 1 || liveCount(db) != 10 {
+	rep, err := Run(context.Background(), db, cfg, gw, RunOptions{})
+	if err != nil || rep.Skipped != 2 || rep.Applied != 1 || liveCount(db) != 11 {
 		t.Fatalf("guards: %+v err=%v live=%d", rep, err, liveCount(db))
 	}
 
@@ -185,7 +193,7 @@ func TestConsolidateGuards(t *testing.T) {
 		many = append(many, Action{Type: "rescore", ID: id, Confidence: 0.7})
 	}
 	gw2 := gatewayReplying(t, many)
-	rep2, err := Run(context.Background(), db2, cfg2, gw2)
+	rep2, err := Run(context.Background(), db2, cfg2, gw2, RunOptions{})
 	if err != nil || rep2.Mode != "review(guard)" || rep2.Applied != 0 || rep2.Proposed != 3 {
 		t.Fatalf("40%% guard: %+v err=%v", rep2, err)
 	}
@@ -204,7 +212,7 @@ func TestConsolidateDue(t *testing.T) {
 		t.Fatal("3 events, every 3: must be due")
 	}
 	gw := gatewayReplying(t, nil)
-	if _, err := Run(context.Background(), db, cfg, gw); err != nil {
+	if _, err := Run(context.Background(), db, cfg, gw, RunOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if since, _, due := Due(db, cfg); due || since != 0 {
@@ -221,13 +229,17 @@ func TestConsolidateDue(t *testing.T) {
 func TestRewriteCategory(t *testing.T) {
 	db, cfg := testStore(t)
 	ids := seed(t, db, cfg, "Prefers commits pushed without asking during an arc")
-	if err := ApplyAction(db, cfg, Action{Type: "rewrite", ID: ids[0], Statement: "Wants commits pushed autonomously during a work arc.", Category: "Workflow", Reason: "re-file"}); err != nil {
+	if err := ApplyAction(db, cfg, Action{Type: "rewrite", ID: ids[0], Statement: "Wants commits pushed autonomously during an arc.", Category: "Workflow", Reason: "re-file"}); err != nil {
 		t.Fatal(err)
 	}
 	var cat, stmt string
 	_ = db.QueryRow(`SELECT category, statement FROM preferences WHERE id=?`, ids[0]).Scan(&cat, &stmt)
-	if cat != "Workflow" || stmt != "Wants commits pushed autonomously during a work arc." {
+	if cat != "Workflow" || stmt != "Wants commits pushed autonomously during an arc." {
 		t.Fatalf("rewrite with category: got %q / %q", cat, stmt)
+	}
+	// A second rewrite needs evidence newer than the first.
+	if err := storage.AppendEvent(db, "reinforce", `{"id":"`+ids[0]+`"}`); err != nil {
+		t.Fatal(err)
 	}
 	if err := ApplyAction(db, cfg, Action{Type: "rewrite", ID: ids[0], Statement: "Wants commits pushed autonomously.", Reason: "shorter"}); err != nil {
 		t.Fatal(err)

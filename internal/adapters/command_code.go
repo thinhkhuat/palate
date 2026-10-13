@@ -126,4 +126,3 @@ func RemoveCommandCodeHooksGlobal() (int, error) {
 	}
 	return removePalateHooksTopLevel(path)
 }
-

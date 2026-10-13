@@ -332,5 +332,3 @@ func RemoveClineHooksGlobal() (int, error) {
 func ClineWiringDetail(dir string) string {
 	return fmt.Sprintf("%d hook shims", CountClineHooks(dir))
 }
-
-

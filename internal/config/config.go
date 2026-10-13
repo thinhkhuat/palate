@@ -42,12 +42,25 @@ type Config struct {
 	// ~/.claude/CLAUDE.md). Learned rows that merely restate one of its rules
 	// are tagged rulebook_overlap in provenance, hidden from TASTE.md and
 	// retired by consolidation. Empty = the feature is off.
-	Rulebook string `yaml:"rulebook"`
-	LLM      LLM
-	Distill           Distill     `yaml:"distill"`
-	Render            Render      `yaml:"render"`
-	Judge             Judge       `yaml:"judge"`
-	Consolidate       Consolidate `yaml:"consolidate"`
+	Rulebook    string `yaml:"rulebook"`
+	LLM         LLM
+	Distill     Distill     `yaml:"distill"`
+	Render      Render      `yaml:"render"`
+	Judge       Judge       `yaml:"judge"`
+	Consolidate Consolidate `yaml:"consolidate"`
+	Profile     Profile     `yaml:"profile"`
+}
+
+// Profile controls the derived, budgeted TASTE.md/SessionStart profile
+// (brainstorm-260927-1539 §6.1). ExcludeProjectSpecific hides project_specific
+// -tagged rows from the profile; ReadBackEdits lets Phase 2's ReadBack promote
+// the owner's own hand edits to TASTE.md into STATED preferences;
+// PromptBlock gates the per-prompt block Phase 2 renders. All three exist so
+// the owner can turn any one off without a code change.
+type Profile struct {
+	ExcludeProjectSpecific bool `yaml:"exclude_project_specific"`
+	ReadBackEdits          bool `yaml:"read_back_edits"`
+	PromptBlock            bool `yaml:"prompt_block"`
 }
 
 // Judge: when a gateway is configured the model judges every explicit write
@@ -59,9 +72,13 @@ type Judge struct {
 
 // Consolidate: the whole-profile review pass. EveryEvents is the watermark
 // distance that lets SessionStart auto-fire it (0 disables auto-fire).
-// PALATE_CONSOLIDATE_EVERY overrides.
+// PALATE_CONSOLIDATE_EVERY overrides. TimeoutSeconds bounds one dream-pass run
+// (Phase 4); StaleCandidateDays is the window a non-STATED candidate stays
+// live before the dream pass forgets it for lack of repetition.
 type Consolidate struct {
-	EveryEvents int `yaml:"every_events"`
+	EveryEvents        int `yaml:"every_events"`
+	TimeoutSeconds     int `yaml:"timeout_seconds"`
+	StaleCandidateDays int `yaml:"stale_candidate_days"`
 }
 
 // Render controls the auto-maintained TASTE.md. Auto is on unless the user
@@ -208,8 +225,8 @@ func Default() Config {
 			Imported:           0.4,
 		},
 		TokenBudgets: TokenBudgets{
-			PrewarmSession: 2000, // whole profile; only ever drops whole lines (decisions row 17)
-			PrewarmGoal:    200,
+			PrewarmSession: 2000, // profile budget, headers included; selection fills it with whole rows (decisions row 35)
+			PrewarmGoal:    0,    // 0 = off (the per-prompt goal block is removed by default, §6.6); any value above 0 turns it back on
 			Recall:         1000,
 			IndexLines:     200,
 			IndexBytes:     25600,
@@ -237,7 +254,8 @@ func Default() Config {
 		Distill:     Distill{Mode: "auto"},
 		Render:      Render{Auto: true},
 		Judge:       Judge{Enabled: true},
-		Consolidate: Consolidate{EveryEvents: 25},
+		Consolidate: Consolidate{EveryEvents: 25, TimeoutSeconds: 300, StaleCandidateDays: 30},
+		Profile:     Profile{ExcludeProjectSpecific: true, ReadBackEdits: true, PromptBlock: true},
 	}
 }
 

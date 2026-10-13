@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
+	"github.com/thinhkhuat/palate/internal/learn"
 )
 
 // countingGateway wraps an httptest server that always replies with the
@@ -311,5 +315,179 @@ func TestLearnSessionBatchFailureKeepsCursor(t *testing.T) {
 	}
 	if pos, attempts, ok := GetCursor(conn, "claude_code", tr.Path); !ok || pos != "19" || attempts != 1 {
 		t.Fatalf("cursor = %q attempts=%d ok=%v, want 19 / 1", pos, attempts, ok)
+	}
+}
+
+// TestLearnSessionRecordsSession covers phase-03 req 1's LearnSession half:
+// the same transcript path reinforced across two separate runs is one
+// session (the key is derived from the path, not the call), while a
+// different transcript path reinforcing the same statement counts as a
+// second, distinct session.
+func TestLearnSessionRecordsSession(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+	reply, err := json.Marshal(struct {
+		Preferences []DistilledStatement `json:"preferences"`
+	}{Preferences: []DistilledStatement{
+		{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.9, Evidence: "always use table-driven tests"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cg := &countingGateway{}
+	server := newCountingSuccessServer(t, cg, string(reply))
+	defer server.Close()
+	gw := gatewayFor(server)
+
+	tr1 := Transcript{Harness: "claude_code", Path: filepath.Join(t.TempDir(), "a.jsonl")}
+	reader1 := stubReader{msgs: []Message{{Role: "user", Content: "always use table-driven tests", Index: 0}}}
+	if _, err := LearnSession(context.Background(), db, cfg, gw, reader1, tr1); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+
+	// Same transcript path, a second call (a later hook fire on the same
+	// session): the window grew, so this batch is genuinely new, but the
+	// session key — derived from tr1.Path — is unchanged.
+	reader1Grown := stubReader{msgs: []Message{
+		{Role: "user", Content: "always use table-driven tests", Index: 0},
+		{Role: "user", Content: "please always use table-driven tests here too", Index: 1},
+	}}
+	if _, err := LearnSession(context.Background(), db, cfg, gw, reader1Grown, tr1); err != nil {
+		t.Fatalf("run 1 (grown): %v", err)
+	}
+
+	var id string
+	if err := db.QueryRow(`SELECT id FROM preferences WHERE statement='Prefers table-driven tests.'`).Scan(&id); err != nil {
+		t.Fatalf("row not found: %v", err)
+	}
+	counts, err := learn.SessionCounts(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[id] != 1 {
+		t.Fatalf("the same transcript path reinforced twice must count as 1 session, got %d", counts[id])
+	}
+
+	tr2 := Transcript{Harness: "claude_code", Path: filepath.Join(t.TempDir(), "b.jsonl")}
+	reader2 := stubReader{msgs: []Message{{Role: "user", Content: "always use table-driven tests", Index: 0}}}
+	if _, err := LearnSession(context.Background(), db, cfg, gw, reader2, tr2); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	counts, err = learn.SessionCounts(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[id] != 2 {
+		t.Fatalf("a different transcript path must count as a second, distinct session, got %d", counts[id])
+	}
+}
+
+// TestDistillerSeesCompareSetNotLedger covers phase-03 req 2: with 300 live
+// rows, the distiller's CURRENT PREFERENCES section holds at most the
+// profile plus compareTopK(20) bullets, never all 300 — the prompt is bounded
+// by the compare set, not by the whole ledger (review F2).
+func TestDistillerSeesCompareSetNotLedger(t *testing.T) {
+	db := testDB(t)
+	cfg := config.Default()
+
+	for i := 0; i < 300; i++ {
+		sig := learn.Signal{Type: learn.SignalExplicitPrefer, Statement: "Prefers option number " + strconv.Itoa(i) + " for widget config.", Category: "General"}
+		if _, err := learn.ApplySignal(db, cfg, sig, nil); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+	profile, err := learn.SelectProfile(db, cfg, cfg.TokenBudgets.PrewarmSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lastBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		lastBody = req.Messages[len(req.Messages)-1].Content
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: `{"preferences":[]}`}}}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	gw := gatewayFor(server)
+
+	reader := stubReader{msgs: []Message{{Role: "user", Content: "totally unrelated new evidence text", Index: 0}}}
+	tr := Transcript{Harness: "claude_code", Path: filepath.Join(t.TempDir(), "many.jsonl")}
+	if _, err := LearnSession(context.Background(), db, cfg, gw, reader, tr); err != nil {
+		t.Fatalf("LearnSession: %v", err)
+	}
+
+	start := strings.Index(lastBody, "## CURRENT PREFERENCES")
+	end := strings.Index(lastBody, "## PREVIOUSLY ANALYZED")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("CURRENT PREFERENCES section not found: %s", lastBody)
+	}
+	bullets := strings.Count(lastBody[start:end], "\n- [")
+	const compareTopK = 20 // phase-03 req 2's constant, unexported in package learn
+	if bullets > len(profile.In)+compareTopK {
+		t.Fatalf("CURRENT PREFERENCES held %d bullets, want <= profile(%d) + compareTopK(%d)", bullets, len(profile.In), compareTopK)
+	}
+}
+
+// A backlog walk can hold learn.lock past its staleness bound; LearnSession
+// refreshes the lock before each batch's gateway call, so the hand-off to the
+// dream pass in the same process never finds an expired lock.
+func TestLearnSessionRefreshesLockBeforeEachBatch(t *testing.T) {
+	conn := testDB(t)
+	cfg := config.Default()
+	cfg.Home = t.TempDir()
+	if err := cfg.EnsureLayout(); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := cfg.StatePath("learn.lock")
+	release, ok := AcquireLearnLock(lockPath)
+	if !ok {
+		t.Fatal("could not take the lock")
+	}
+	defer release()
+	stale := time.Now().Add(-11 * time.Minute)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var ages []time.Duration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info, err := os.Stat(lockPath); err == nil {
+			mu.Lock()
+			ages = append(ages, time.Since(info.ModTime()))
+			mu.Unlock()
+		}
+		// Age the lock again, as a slow batch would.
+		_ = os.Chtimes(lockPath, stale, stale)
+		resp := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: `{"preferences":[]}`}}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	gw := &Gateway{Endpoint: srv.URL, Model: "m"}
+
+	tr := Transcript{Harness: "claude_code", Path: filepath.Join(t.TempDir(), "backlog.jsonl")}
+	if _, err := LearnSession(context.Background(), conn, cfg, gw, stubReader{msgs: backlog(45)}, tr); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ages) != 3 {
+		t.Fatalf("observed %d gateway calls, want 3", len(ages))
+	}
+	for i, age := range ages {
+		if age > time.Minute {
+			t.Fatalf("lock age at batch %d's gateway call = %v, want under 1m", i+1, age)
+		}
 	}
 }

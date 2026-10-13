@@ -258,3 +258,122 @@ func TestGatewayNeverLeaksKey(t *testing.T) {
 		t.Fatalf("refused-connection error leaked the API key: %v", err)
 	}
 }
+
+// sseHandler streams the given raw SSE lines (each already framed) and
+// records the request body it received.
+func sseHandler(got *map[string]any, lines ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if got != nil {
+			_ = json.NewDecoder(r.Body).Decode(got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, l := range lines {
+			_, _ = io.WriteString(w, l)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}
+}
+
+func TestGatewayStreamsSSE(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(sseHandler(&got,
+		": keep-alive\n\n",
+		`data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"thinking "}}]}`+"\n\n",
+		`data: {"choices":[{"delta":{"reasoning":"more thinking"}}]}`+"\n\n",
+		`data: {"choices":[{"delta":{"content":"{\"a\":"}}]}`+"\n\n",
+		`data: {"choices":[{"delta":{"content":"1}"}}]}`+"\n\n",
+		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`+"\n\n",
+		"data: [DONE]\n\n",
+	))
+	defer server.Close()
+
+	g := newTestGateway(t, server, "")
+	content, err := g.Complete(context.Background(), "system", "user", 0, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if content != `{"a":1}` {
+		t.Fatalf("content = %q, want exactly the concatenated content deltas", content)
+	}
+	if got["stream"] != true {
+		t.Fatalf("request stream = %v, want true", got["stream"])
+	}
+	opts, _ := got["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Fatalf("stream_options = %v, want include_usage true", got["stream_options"])
+	}
+}
+
+func TestGatewayStreamEndsAtFinishReason(t *testing.T) {
+	server := httptest.NewServer(sseHandler(nil,
+		`data: {"choices":[{"delta":{"content":"whole "}}]}`+"\n\n",
+		`data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}`+"\n\n",
+		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`+"\n\n",
+	))
+	defer server.Close()
+
+	content, err := newTestGateway(t, server, "").Complete(context.Background(), "system", "user", 0, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if content != "whole answer" {
+		t.Fatalf("content = %q, want %q", content, "whole answer")
+	}
+}
+
+func TestGatewayFallsBackToJSON(t *testing.T) {
+	server := httptest.NewServer(jsonHandler(t, http.StatusOK,
+		`{"choices":[{"message":{"role":"assistant","content":"plain json reply"}}]}`))
+	defer server.Close()
+
+	g := newTestGateway(t, server, "")
+	content, err := g.Complete(context.Background(), "system", "user", 0, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if content != "plain json reply" {
+		t.Fatalf("content = %q, want %q", content, "plain json reply")
+	}
+}
+
+func TestGatewayStreamErrorMidway(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"cut before DONE", []string{
+			`data: {"choices":[{"delta":{"content":"half an answ"}}]}` + "\n\n",
+		}, "before [DONE]"},
+		{"error event", []string{
+			`data: {"choices":[{"delta":{"content":"half"}}]}` + "\n\n",
+			`data: {"error":{"message":"upstream blew up","type":"server_error"}}` + "\n\n",
+			"data: [DONE]\n\n",
+		}, "upstream blew up"},
+		{"stopped at length", []string{
+			`data: {"choices":[{"delta":{"content":"cut off"},"finish_reason":"length"}]}` + "\n\n",
+		}, "length"},
+		{"DONE with no content", []string{"data: [DONE]\n\n"}, "no content"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(sseHandler(nil, tc.lines...))
+			defer server.Close()
+
+			g := newTestGateway(t, server, "")
+			content, err := g.Complete(context.Background(), "system", "user", 0, nil)
+			if err == nil {
+				t.Fatalf("Complete succeeded with %q, want an error", content)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.want)
+			}
+			if content != "" {
+				t.Fatalf("content = %q on error, want no partial answer", content)
+			}
+		})
+	}
+}

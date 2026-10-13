@@ -2,7 +2,9 @@ package distill
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 
@@ -50,6 +52,12 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 	}
 
 	source, key := t.Harness, t.Path
+	// The session key identifies this transcript across runs (phase-03 req
+	// 1): every create/reinforce event this session produces carries it, so
+	// learn.SessionCounts can tell "seen again in a later session" from
+	// "seen twice in the same batch". It never leaves the transcript path in
+	// the clear — only a short hash of it.
+	sessionKey := sessionKeyFor(source, key)
 	// The curated rulebook rides along on every batch so restatements get
 	// the rulebook flag; fail-open when unset or unreadable.
 	rulebookBlock, _ := learn.LoadRulebook(cfg)
@@ -78,17 +86,29 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 		}
 		lastIndex := batch[len(batch)-1].Index
 
-		prefs, err := learn.ListPreferences(conn, false)
+		// A transcript with a long backlog can keep the learn lock held far
+		// past its staleness bound; refresh it before every batch's call.
+		_ = TouchLock(cfg.StatePath("learn.lock"))
+
+		// The compare set — the profile plus a bounded FTS slice — replaces
+		// the whole live ledger here (phase-03 req 2, review F2): the prompt
+		// no longer grows with the ledger.
+		batchText := FormatEvidence(t.Harness, batch)
+		compareSet, err := learn.CompareSet(conn, cfg, batchText)
 		if err != nil {
-			return sum, fmt.Errorf("list preferences: %w", err)
+			return sum, fmt.Errorf("compare set: %w", err)
 		}
 
-		result, distillErr := Distill(ctx, conn, gw, prefs, FormatEvidence(t.Harness, prev), FormatEvidence(t.Harness, batch), rulebookBlock)
+		result, distillErr := Distill(ctx, conn, gw, compareSet, FormatEvidence(t.Harness, prev), batchText, rulebookBlock)
 		sum.Batches++
 		if distillErr == nil {
-			applied, dropped := ApplyDistilled(conn, cfg, result.Statements)
+			// A statement whose evidence quote lives only in an assistant
+			// message (never in a user one) is dropped before it can ever
+			// reach ApplyDistilled (phase-03 req 4).
+			kept, filtered := filterAssistantOnlyEvidence(conn, batch, result.Statements)
+			applied, dropped := ApplyDistilled(conn, cfg, kept, sessionKey)
 			sum.Applied += applied
-			sum.Dropped += dropped
+			sum.Dropped += dropped + filtered
 			if err := SetCursor(conn, source, key, strconv.Itoa(lastIndex)); err != nil {
 				return sum, fmt.Errorf("set cursor: %w", err)
 			}
@@ -129,4 +149,21 @@ func contextBefore(all []Message, firstIndex int) []Message {
 		start = 0
 	}
 	return all[start:end]
+}
+
+// sessionKeyFor computes a transcript's session key (phase-03 req 1):
+// harness + ":" + a short hash of its path — stable across runs (the same
+// transcript always yields the same key) but never leaks the path itself
+// into an event payload or a gateway prompt.
+func sessionKeyFor(harness, path string) string {
+	return harness + ":" + shortSHA256Hex(path)
+}
+
+// shortSHA256Hex hex-encodes the first 12 characters of sha256(s) — shared by
+// sessionKeyFor here and repo.go's gitSessionKey, both of which need a short,
+// deterministic, non-reversible identity derived from a string that must
+// never itself leave the machine.
+func shortSHA256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:12]
 }

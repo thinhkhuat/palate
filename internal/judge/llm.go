@@ -32,17 +32,26 @@ type verdict struct {
 	TargetID   string  `json:"target_id"`
 	Reason     string  `json:"reason"`
 	Rulebook   bool    `json:"rulebook"`
+	// Project is the verdict's own flag that the candidate describes one
+	// project's own features, files, components or requirements rather than
+	// how the user works (phase-03 req 3) — the same optional field the
+	// distiller's response carries.
+	Project bool `json:"project"`
 }
 
 func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, in Input) (learn.Assessment, error) {
-	// The model compares against the whole active profile, not one category:
-	// a paraphrase filed elsewhere must still be recognised (Command Code's
-	// learner reads every taste file). The hint only seeds the category.
+	// The model compares against the compare set (the profile plus the best
+	// full-text matches outside it), not one category: a paraphrase filed
+	// elsewhere must still be recognised. The hint only seeds the category.
 	hint := in.Category
 	if hint == "" {
 		hint = learn.InferCategoryFromStatement(in.Statement)
 	}
-	existing, _ := learn.ListPreferences(conn, false)
+	// The compare set (phase-03 req 2) replaces the whole live ledger: the
+	// profile plus a bounded FTS slice keyed on the candidate's own wording.
+	// The guard below only ever trusts a target id the model was actually
+	// shown, so a smaller set is safe by construction.
+	existing, _ := learn.CompareSet(conn, cfg, in.Statement)
 	ids := map[string]bool{}
 	for _, p := range existing {
 		ids[p.ID] = true
@@ -80,6 +89,7 @@ func (j *LLMJudge) Assess(ctx context.Context, conn *sql.DB, cfg config.Config, 
 		Reason:          v.Reason,
 		By:              "llm",
 		RulebookOverlap: v.Rulebook,
+		ProjectSpecific: v.Project,
 	}
 	if a.Category == "" {
 		a.Category = hint

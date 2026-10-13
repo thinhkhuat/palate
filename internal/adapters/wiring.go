@@ -15,6 +15,7 @@ import (
 //     learn once wired".
 //   - Wiring below: what is actually installed on THIS machine right now —
 //     "this harness DOES capture/inject today".
+//
 // Doctor prints both, so "verified but not wired" is visible instead of
 // reading as if the harness were already learning (the 2026-09-16 review
 // finding: doctor reported 3 harnesses learning while only Claude Code was
@@ -22,7 +23,7 @@ import (
 type WiringState int
 
 const (
-	WiringAbsent  WiringState = iota // harness home not detected on this machine
+	WiringAbsent   WiringState = iota // harness home not detected on this machine
 	WiringNotWired                    // harness present, no palate wiring found
 	WiringWired                       // palate wiring found (hooks or MCP)
 )

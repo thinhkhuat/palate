@@ -37,6 +37,17 @@ type Input struct {
 	// rulebook too and may have tagged the statement); merged with the LLM
 	// verdict's own flag in Apply.
 	RulebookOverlap bool
+	// ProjectSpecific is the caller's own flag that the statement describes
+	// one project's own features, files, components or requirements rather
+	// than how the user works (phase-03 req 3); merged with the LLM
+	// verdict's own flag in Apply, the same way RulebookOverlap is.
+	ProjectSpecific bool
+	// Session identifies the session that produced this candidate (phase-03
+	// req 1: the harness plus a short hash of the transcript path, or a git
+	// window's own key). Forwarded into Signal.Session so the create/
+	// reinforce event it produces carries it. Empty when the caller does
+	// not know one (every explicit CLI/MCP write today).
+	Session string
 }
 
 // Judge assesses a candidate write against the store.
@@ -89,11 +100,14 @@ func Apply(ctx context.Context, conn *sql.DB, cfg config.Config, in Input, evide
 		storage.BumpHit(conn, "judge_llm")
 	}
 	// Either source of the rulebook flag (the caller's or the verdict's)
-	// is enough to tag the row.
+	// is enough to tag the row; the project flag works the same way.
 	if in.RulebookOverlap {
 		a.RulebookOverlap = true
 	}
-	sig := learn.Signal{Type: in.Signal, Statement: a.Statement, Category: a.Category, Evidence: evidence, Weight: in.Confidence}
+	if in.ProjectSpecific {
+		a.ProjectSpecific = true
+	}
+	sig := learn.Signal{Type: in.Signal, Statement: a.Statement, Category: a.Category, Evidence: evidence, Weight: in.Confidence, Session: in.Session}
 	p, err := learn.ApplyJudged(conn, cfg, sig, a)
 	return p, a, err
 }
@@ -114,10 +128,13 @@ func Correct(ctx context.Context, conn *sql.DB, cfg config.Config, c learn.Corre
 }
 
 // ApplyDistilled is the distill.Judge seam: one distilled statement, judged
-// against the whole profile and stored through Apply with the distiller's own
-// confidence as the hint and its evidence on the event.
+// against the compare set and stored through Apply with the distiller's own
+// confidence as the hint and its evidence on the event. s.Session and
+// s.Project (set by distill.ApplyDistilled before this seam is called) ride
+// straight into Input, so the resulting event carries the session key and
+// the row is tagged project-specific exactly as the heuristic path does.
 func ApplyDistilled(ctx context.Context, conn *sql.DB, cfg config.Config, s distill.DistilledStatement) error {
-	_, _, err := Apply(ctx, conn, cfg, Input{Statement: s.Statement, Signal: learn.SignalLLMDistilled, Category: s.Category, Confidence: s.Confidence, RulebookOverlap: s.Rulebook}, s.Evidence)
+	_, _, err := Apply(ctx, conn, cfg, Input{Statement: s.Statement, Signal: learn.SignalLLMDistilled, Category: s.Category, Confidence: s.Confidence, RulebookOverlap: s.Rulebook, ProjectSpecific: s.Project, Session: s.Session}, s.Evidence)
 	return err
 }
 

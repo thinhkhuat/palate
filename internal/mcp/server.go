@@ -20,7 +20,7 @@ import (
 )
 
 func NewServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.5.2"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "palate", Version: "0.6.0"}, nil)
 	registerTools(s)
 	return s
 }
@@ -50,7 +50,7 @@ type StatementInput struct {
 type StatsInput struct{}
 
 type ForgetInput struct {
-	ID string `json:"id" jsonschema:"id of the memory or preference to delete, as printed by palate_recall"`
+	ID string `json:"id" jsonschema:"id of the memory or preference to forget, as printed by palate_recall; a preference is retired, not erased, and the owner can restore it with the palate restore command"`
 }
 
 // flushed wraps a write tool so TASTE.md is re-rendered right after the
@@ -65,14 +65,14 @@ func flushed[In any](h func(context.Context, *mcp.CallToolRequest, In) (*mcp.Cal
 }
 
 func registerTools(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_recall", Description: "Recall preferences and memories matching a query"}, handleRecall)
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_recall", Description: "Recall preferences and memories matching a query; a preference that is also in the budgeted taste profile (TASTE.md) is marked [profile]"}, handleRecall)
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_remember", Description: "Store a memory"}, flushed(handleRemember))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_correct", Description: "Record a correction: tried, wrong_because, fix, trigger_context"}, flushed(handleCorrect))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_prefer", Description: "Record an explicit preference"}, flushed(handlePrefer))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_reject", Description: "Record an explicit rejection"}, flushed(handleReject))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_accept", Description: "Record an explicit acceptance"}, flushed(handleAccept))
 	mcp.AddTool(s, &mcp.Tool{Name: "palate_stats", Description: "Show capture and storage stats"}, handleStats)
-	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory or preference by id"}, flushed(handleForget))
+	mcp.AddTool(s, &mcp.Tool{Name: "palate_forget", Description: "Forget a memory (deleted) or a preference (retired, restorable with the palate restore command; there is no MCP restore tool) by id"}, flushed(handleForget))
 }
 
 func textResult(msg string) *mcp.CallToolResult {
@@ -115,7 +115,7 @@ func gateExplicit(s string) *mcp.CallToolResult {
 }
 
 func handleRecall(ctx context.Context, req *mcp.CallToolRequest, in RecallInput) (*mcp.CallToolResult, interface{}, error) {
-	_, db, fail := openStore()
+	cfg, db, fail := openStore()
 	if fail != nil {
 		return fail, nil, nil
 	}
@@ -123,11 +123,46 @@ func handleRecall(ctx context.Context, req *mcp.CallToolRequest, in RecallInput)
 	if len(results) == 0 {
 		return textResult("no results"), nil, nil
 	}
+	markProfileMembers(db, cfg, results)
 	var lines []string
 	for _, r := range results {
-		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f) id=%s", r.Table, r.Content, r.Score, r.ID))
+		marker := ""
+		if r.Table == "preferences" && r.InProfile {
+			marker = " [profile]"
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s (%.2f)%s id=%s", r.Table, r.Content, r.Score, marker, r.ID))
 	}
 	return textResult(strings.Join(lines, "\n")), nil, nil
+}
+
+// markProfileMembers sets InProfile on every preference among results,
+// computed with the same learn.SelectProfile the SessionStart block uses
+// (phase-02 req 14) — palate_recall keeps searching the whole live ledger;
+// this only annotates which of the hits also made the budgeted profile.
+func markProfileMembers(db *sql.DB, cfg config.Config, results []storage.RecallResult) {
+	needsMark := false
+	for _, r := range results {
+		if r.Table == "preferences" {
+			needsMark = true
+			break
+		}
+	}
+	if !needsMark {
+		return
+	}
+	profile, err := learn.SelectProfile(db, cfg, render.ProfileBudget(cfg))
+	if err != nil {
+		return
+	}
+	inProfile := make(map[string]bool, len(profile.In))
+	for _, p := range profile.In {
+		inProfile[p.ID] = true
+	}
+	for i := range results {
+		if results[i].Table == "preferences" {
+			results[i].InProfile = inProfile[results[i].ID]
+		}
+	}
 }
 
 func handleRemember(ctx context.Context, req *mcp.CallToolRequest, in RememberInput) (*mcp.CallToolResult, interface{}, error) {

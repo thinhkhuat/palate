@@ -7,13 +7,15 @@ description: Apply the user's learned coding taste (style, naming, testing habit
 
 Palate observes how you edit, correct, and state preferences, scores each one
 with a confidence that moves only on evidence (reinforced when confirmed,
-weakened when contradicted), and pushes the whole current profile into this
-session at `SessionStart` (the same lines as `TASTE.md`) plus intent-scoped
-`UserPromptSubmit` prewarm blocks (`<palate-prewarm scope="...">…</palate-prewarm>`),
-a `<palate-learned>…</palate-learned>` block at the first prompt after the
-background learner stored something new (apply those lines from then on, the
-SessionStart profile predates them), and the `palate_recall` MCP tool. An
-empty profile is announced as such — learning is automatic; nothing to do.
+weakened when contradicted), and pushes the current profile into this
+session at `SessionStart` (the same lines as `TASTE.md`: a budgeted subset of
+what it has learned, so a new, one-off observation may not be in it yet), a
+`<palate-learned>…</palate-learned>` block at the first prompt after a
+preference enters the profile (apply those lines from then on, the
+SessionStart profile predates them), and the `palate_recall` MCP tool. A
+per-prompt `<palate-prewarm scope="goal">` block appears only if the owner
+turned it on. An empty profile is announced as such — learning is automatic;
+nothing to do.
 
 ## Two tiers of trust
 
@@ -30,10 +32,14 @@ empty profile is announced as such — learning is automatic; nothing to do.
 
 ## When the user states a preference explicitly
 
-Do not hand-edit the Palate home (`~/.claude/palate/`, or a legacy repo
-`.palate/`) or its `TASTE.md` — both are managed stores (`TASTE.md` is an
-auto-maintained render of the DB, not the source of truth; a hand edit is
-overwritten on the next write). Instead, call the
+Do not edit the Palate home (`~/.claude/palate/`, or a legacy repo
+`.palate/`) or its `TASTE.md` yourself. `TASTE.md` is an auto-maintained
+render of the profile, not the source of truth. The owner's own edits to it
+are read back as stated taste. An edit made with the Edit or Write tool is
+held instead (the file is not rewritten until the owner accepts or discards
+it, and the next notice says so); an edit made through the shell leaves no
+snapshot, so Palate cannot tell it from the owner's and would read it back
+as their words. Instead, call the
 matching MCP tool: with a gateway configured the model judges the statement
 (wording, category, confidence, and whether it is new, the same as, a
 refinement of, or a contradiction of a stored row) and the tool reply shows
@@ -47,7 +53,11 @@ reinforced on the next confirmation:
 | Explicitly rejects an approach | `palate_reject` |
 | Explicitly accepts/confirms an approach | `palate_accept` |
 
-`palate_recall` reads the current taste profile; use it when you need more
-context than the prewarm block already injected. Never invent a preference
+`palate_recall` searches everything Palate has stored, not only the profile;
+a preference that is also in the profile is marked `[profile]`. Use it when
+you need more context than the prewarm block already injected. If the user
+asks you to forget a preference, `palate_forget` retires it (it can be
+restored with the CLI command `palate restore`; there is no MCP restore
+tool). Never invent a preference
 the user didn't state or that Palate hasn't actually learned — if you're
 unsure whether something is a real preference, ask, don't guess.

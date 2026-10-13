@@ -1,13 +1,35 @@
 package learn
 
 import (
+	"bytes"
 	"database/sql"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/thinhkhuat/palate/internal/config"
 	"github.com/thinhkhuat/palate/internal/storage"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns what
+// was written to it — used to prove a refused rewrite logs its reason
+// (phase-01 req 11), not just silently keeps the old text.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = orig
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
 
 func testDB(t *testing.T) (*sql.DB, config.Config) {
 	t.Helper()
@@ -133,9 +155,16 @@ func TestExtractStatedPreferenceWordBoundary(t *testing.T) {
 // judge: same reinforces, refines rewrites + logs "refine", contradicts
 // weakens + opens a conflict + inserts the new side, new inserts at the
 // clamped confidence; an unknown target degrades to new.
+//
+// The base row seeds DISTILLED (not the STATED an explicit_prefer signal
+// would give): learn.RewriteAllowed refuses to rewrite STATED text
+// unconditionally (phase-01 req 8), so "refines" needs a non-STATED target
+// to still be eligible for a rewrite here. A rewrite only ever trims, never
+// grows (req 8 bullet 3), so the refined text is shorter than the original —
+// TestApplyJudgedRefinesRefusesStatedTarget below covers the STATED case.
 func TestApplyJudgedRelations(t *testing.T) {
 	db, cfg := testDB(t)
-	base, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 1.0, Relation: RelationNew, By: "test"})
+	base, err := ApplyJudged(db, cfg, Signal{Type: SignalLLMDistilled, Weight: 0.5}, Assessment{Statement: "Prefers table-driven tests with named subtests.", Category: "Testing", Confidence: 1.0, Relation: RelationNew, By: "test"})
 	if err != nil || base.Confidence != 0.95 {
 		t.Fatalf("new must clamp to 0.95: %+v %v", base, err)
 	}
@@ -143,12 +172,12 @@ func TestApplyJudgedRelations(t *testing.T) {
 	if same.ID != base.ID || same.ReinforcementCount == 0 && same.Confidence < base.Confidence {
 		t.Fatalf("same must reinforce the target: %+v", same)
 	}
-	ref, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests with named subtests.", Category: "Testing", Confidence: 0.5, Relation: RelationRefines, TargetID: base.ID, By: "test"})
+	ref, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.5, Relation: RelationRefines, TargetID: base.ID, By: "test"})
 	if err != nil {
 		t.Fatalf("refines: %v", err)
 	}
-	if ref.ID != base.ID || ref.Statement != "Prefers table-driven tests with named subtests." {
-		t.Fatalf("refines must rewrite in place: %+v", ref)
+	if ref.ID != base.ID || ref.Statement != "Prefers table-driven tests." {
+		t.Fatalf("refines must rewrite a non-STATED target in place: %+v", ref)
 	}
 	var refines int
 	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='refine'`).Scan(&refines)
@@ -177,6 +206,44 @@ func TestApplyJudgedRelations(t *testing.T) {
 	unk, _ := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers fast tests.", Category: "Testing", Confidence: 0.6, Relation: RelationSame, TargetID: "nope", By: "test"})
 	if unk.Statement != "Prefers fast tests." || unk.ID == base.ID {
 		t.Fatalf("unknown target must degrade to new: %+v", unk)
+	}
+}
+
+// TestApplyJudgedRefinesRefusesStatedTarget proves phase-01 req 8/11: a
+// STATED target (the common case — any explicit_prefer signal seeds STATED)
+// is never rewritten by the judge's refines path. The row still reinforces,
+// the refused reason reaches stderr, and no "refine" event is written.
+func TestApplyJudgedRefinesRefusesStatedTarget(t *testing.T) {
+	db, cfg := testDB(t)
+	base, err := ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests.", Category: "Testing", Confidence: 0.6, Relation: RelationNew, By: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.TrustTier != "STATED" {
+		t.Fatalf("an explicit_prefer new insert must be STATED, got %s", base.TrustTier)
+	}
+	before := base.Confidence
+
+	var ref *Preference
+	stderr := captureStderr(t, func() {
+		ref, err = ApplyJudged(db, cfg, Signal{Type: SignalExplicitPrefer}, Assessment{Statement: "Prefers table-driven tests with named subtests.", Category: "Testing", Confidence: 0.9, Relation: RelationRefines, TargetID: base.ID, By: "test"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.ID != base.ID || ref.Statement != base.Statement {
+		t.Fatalf("a STATED target's text must be kept, got %q (want %q)", ref.Statement, base.Statement)
+	}
+	if ref.Confidence <= before {
+		t.Fatalf("the row must still reinforce even when the rewrite is refused: before=%f after=%f", before, ref.Confidence)
+	}
+	if !strings.Contains(stderr, "refused") || !strings.Contains(stderr, base.ID) {
+		t.Fatalf("a refused rewrite must log its reason to stderr, got %q", stderr)
+	}
+	var refines int
+	_ = db.QueryRow(`SELECT count(*) FROM events WHERE event_type='refine'`).Scan(&refines)
+	if refines != 0 {
+		t.Fatalf("a refused rewrite must not log a refine event, got %d", refines)
 	}
 }
 

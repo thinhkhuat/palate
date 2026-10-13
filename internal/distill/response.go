@@ -14,8 +14,20 @@ type DistilledStatement struct {
 	// Rulebook is the model's flag that the statement merely restates a rule
 	// from the user's curated rulebook; it lands in provenance as
 	// learn.RulebookOverlap (render suppresses, consolidation retires).
-	Rulebook bool    `json:"rulebook"`
-	Evidence string  `json:"evidence"`
+	Rulebook bool   `json:"rulebook"`
+	Evidence string `json:"evidence"`
+	// Project is the model's flag that the statement describes one
+	// project's own features, files, components or requirements rather than
+	// how the user works (phase-03 req 3). It lands in provenance as
+	// learn.TagProjectSpecific; the row still stores (it stays a candidate),
+	// only the profile excludes it.
+	Project bool `json:"project,omitempty"`
+	// Session identifies the session that produced this statement — set by
+	// code after the model replies (the harness plus a short hash of the
+	// transcript path, or "git:" plus a short hash of the commit range for
+	// repo learning), never by the model itself, so json:"-" keeps it out of
+	// both directions of the wire format.
+	Session string `json:"-"`
 }
 
 // ParseResponse tries, in order: (1) unmarshal into the requested

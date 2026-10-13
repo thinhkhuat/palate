@@ -53,7 +53,7 @@ Single source of truth: [`docs/adapters.md`](docs/adapters.md). Verification gat
 
 | Harness | Capture capability (honest) | Injection path | Install hint |
 |---------|----------------------------|----------------|--------------|
-| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the whole profile, 2000-tok budget dropping whole lines only + UserPromptSubmit `additionalContext` ~200 tok; SessionStart also posts a `systemMessage` with what was learned since last time) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
+| **Claude Code** | hook-based learning (PostToolUse / UserPromptSubmit / Stop / SessionStart + PreCompact) | push prewarm (SessionStart: the budgeted profile, the same body as `TASTE.md`; UserPromptSubmit `additionalContext`: the `<palate-learned>` block with rows that just entered the profile; both hooks post a `systemMessage` with what entered or left the profile since last time) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
 | **Command Code** | hook-based learning (SessionStart / PostToolUse / Stop via `~/.commandcode`; Command Code has no `UserPromptSubmit` or `PreCompact` event — the per-turn surface is the mod's `transformInput`) | push prewarm (SessionStart `additionalContext`; per-turn context via the mod) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
 | **ZCode** | hook-based learning (SessionStart / UserPromptSubmit / PostToolUse / Stop — no PreCompact event exists) | push prewarm (strict-JSON `additionalContext`) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
 | **Cline** | hook-based learning (TaskStart / TaskResume / UserPromptSubmit / PostToolUse / TaskComplete / TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | [§2.1](#21-claude-code--command-code--zcode--cline--hook-based-learning) |
@@ -165,7 +165,7 @@ palate prewarm --scope session | head -20
 palate prewarm --scope goal --prompt "write table-driven tests" | head -20
 ```
 
-Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go`, `internal/adapters/cline.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → `user_diff` state-walk against `<home>/state/model_edits.json` (a snapshot that drifted since Stop is a hand-edit) + lever + `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code only — Command Code has no such event, and its `UserPromptSubmit` is served by the mod's `transformInput`, not a settings hook). Cline: `TaskStart`/`TaskResume`/`UserPromptSubmit`/`PostToolUse`/`TaskComplete`/`TaskCancel` shim the same four subcommands (`session-start` with source `startup`/`resume`, `user-prompt`, `post-tool-use`, `stop`); the distill transcript comes from the session metadata record.
+Implementation: `internal/adapters/claude_code.go`, `internal/adapters/command_code.go`, `internal/adapters/zcode.go`, `internal/adapters/cline.go` behind PAT-001 `registry.go`. Hooks: `SessionStart` → `palate hook session-start` (JSON prewarm + cross-session `user_diff`), `UserPromptSubmit` → read back hand edits to `TASTE.md`, then the `user_diff` state-walk against `<home>/state/model_edits.json` (a snapshot that drifted since Stop is a hand-edit), then the notice and the `<palate-learned>` `additionalContext`, `PostToolUse Edit|Write` → `model_edit{hash_after}`, `Stop` → re-baseline every snapshot to disk (drift during the assistant's own turn is its own edit, never learned), `PreCompact` → recovery (Claude Code only — Command Code has no such event, and its `UserPromptSubmit` is served by the mod's `transformInput`, not a settings hook). Cline: `TaskStart`/`TaskResume`/`UserPromptSubmit`/`PostToolUse`/`TaskComplete`/`TaskCancel` shim the same four subcommands (`session-start` with source `startup`/`resume`, `user-prompt`, `post-tool-use`, `stop`); the distill transcript comes from the session metadata record.
 
 ---
 
@@ -247,7 +247,7 @@ palate serve --port 127.0.0.1:4317
 PALATE_MCP_TOKEN=... palate serve --port 4317
 ```
 
-Tools exposed: `palate_recall`, `palate_remember`, `palate_correct`, `palate_prefer`, `palate_reject`, `palate_accept`, `palate_forget`, `palate_stats`. `correct`/`prefer`/`reject`/`accept` refuse on any secret or injection match; `remember` refuses secrets and quarantines injections (`[PALATE: FLAGGED]`); `recall`/`forget`/`stats` take no free-text content.
+Tools exposed: `palate_recall`, `palate_remember`, `palate_correct`, `palate_prefer`, `palate_reject`, `palate_accept`, `palate_forget`, `palate_stats`. `correct`/`prefer`/`reject`/`accept` refuse on any secret or injection match; `remember` refuses secrets and quarantines injections (`[PALATE: FLAGGED]`); `recall`/`forget`/`stats` take no free-text content. `palate_recall` searches the whole ledger and marks preferences that are also in the profile with `[profile]`; `palate_forget` deletes a memory but only retires a preference (restore it with the CLI `palate restore`; there is no MCP restore tool).
 
 ## 3. MCP auth (all harnesses)
 
@@ -292,23 +292,43 @@ not an add-on. Three roles, all behind the same `safety.Scan`/`Censor` gate:
    opens a conflict, stores the new side). `palate prefer` prints the verdict:
    `prefer recorded (Testing, refines, c=0.85, llm)`. `judge.enabled: false` or
    `PALATE_JUDGE=0` switches back to the heuristics.
-2. **Distiller over transcripts, journals and git** (below) — unchanged.
-3. **Consolidator over the whole profile** — `palate consolidate` (also run by
-   `palate sleep`, and auto-fired detached by `SessionStart` once
-   `consolidate.every_events` new events have landed, default 25): the model
-   reads every active preference and returns the smallest set of `merge`,
-   `rewrite`, `rescore`, `retire` actions. `distill.mode: auto` applies them
-   after a DB backup; `review` files each as a proposal for `palate promote`.
-   Guards: a row reinforced in the last 24 h is never retired; a pass touching
-   more than 40 % of the rows is downgraded to proposals whatever the mode.
+2. **Distiller over transcripts, journals and git** (§5.1).
+3. **Dream pass over the profile and its candidates** — `palate consolidate`
+   (alias `palate dream`; also run by `palate sleep`, and started by
+   `SessionStart` once `consolidate.every_events` new events have landed,
+   default 25): the model sees the whole profile plus the candidates (rows outside
+   it that are new or changed since the last applied pass) in batches of
+   40, is told the token budget and the profile's current size, and
+   returns `merge`, `rewrite`, `rescore`, `retire` and `project` actions.
+   `distill.mode: auto` applies them after a DB backup; `review` files each as
+   a proposal for `palate promote`. Guards: a row reinforced in the last 24 h
+   *and* seen in two sessions is never retired; a pass that would touch more
+   than 40 % of the ledger is downgraded to proposals for that batch; a
+   `STATED` row's text is never rewritten, and a `retire`, `project`,
+   confidence-lowering `rescore`, or a `merge` that would lower a `STATED`
+   row's confidence or re-file it, is always a proposal, never applied by the
+   pass (checked again against the row at the moment of writing). An action on
+   a row an earlier batch already closed is skipped and writes no event. A failed backup stops the pass before any write. After
+   the batches, a step with no model call forgets candidates seen in only one
+   session and older than `consolidate.stale_candidate_days` (default 30; 0
+   turns it off); it re-reads each row just before closing it, so it never
+   retires a row the pass itself merged or the owner just made `STATED`.
+   `palate restore <id>` on a row it forgot promotes the row to `STATED`, so
+   the next pass leaves it alone. Every
+   attempt, including a failed or skipped one, is a line in
+   `state/consolidate.log`, and the next notice reports a failure once. The
+   line counts every action the model returned in exactly one bucket
+   (`applied`, `proposed` or `skipped`, so they add up to `actions`;
+   `skip_reasons` says why each skipped one was) and lists each batch's gateway
+   wait in `batch_ms`, beside the whole attempt's `duration_ms`.
 
 **No gateway = the heuristics, exactly as 0.2.x behaved**: keyword category,
 weight×0.5 confidence, exact/negation/near-duplicate matching, regex stated
 preferences and raw diffs. A gateway that errors mid-call falls back to the
 same heuristics for that write, prints one `judge fell back to heuristics`
 line and bumps the `judge_fallback` counter (`palate stats`). `palate doctor`
-prints `judge: llm (<model>)` or `judge: heuristic (…)` and the consolidation
-watermark.
+prints `judge: llm (<model>)` or `judge: heuristic (…)` and how many events
+have landed since the last dream pass.
 
 ### 5.1 Distiller (transcripts, journals, git)
 
@@ -317,7 +337,7 @@ comes back as natural-language preferences at `trust_tier=DISTILLED` — same
 decay/reinforce math, same `preferences` table, same `TASTE.md` render.
 
 ```sh
-export PALATE_LLM_TIMEOUT=120                    # optional — per-request seconds, default 30; raise it for whole-profile consolidate passes
+export PALATE_LLM_TIMEOUT=120                    # optional — per-request seconds for the distiller and the judge, default 30; on a streamed reply it limits connecting and the longest silence with no bytes received, and one call is capped at 4x it (the dream pass has its own consolidate.timeout_seconds)
 export PALATE_LLM_ENDPOINT=https://your-gateway/v1/chat/completions
 export PALATE_LLM_MODEL=your-model-id
 export PALATE_LLM_API_KEY=...            # optional — some gateways need none
@@ -331,13 +351,21 @@ stripped before it leaves the machine.
 
 **Live learning (no command to run):** once `PALATE_LLM_*` is set, the
 `Stop` and `SessionStart` hooks (§2.1) spawn `palate learn session` as a
-detached, fire-and-forget child on every turn — the hook itself never waits
-on the LLM call, so a slow or dead gateway never adds hook latency. Each
-distilled statement is then judged against the whole profile before it is
-stored (same / refines / contradicts / new), exactly like an explicit write,
-so a paraphrase reinforces the existing row instead of adding a duplicate.
-What landed is announced at your next prompt (`palate: since your last prompt
-— learned 1, …`) and handed to the model as a `<palate-learned>` block.
+detached, fire-and-forget child — the hook itself never waits on the LLM
+call, so a slow or dead gateway never adds hook latency. `SessionStart`
+spawns exactly one child: it learns from the just-closed transcript and then,
+if a dream pass is due, runs it in the same process under the same lock
+(`learn session --then-consolidate`); `Stop` only learns. Each distilled
+statement is judged against the profile plus the best full-text matches
+outside it (same / refines / contradicts / new), exactly like an explicit
+write, so a paraphrase reinforces the existing row instead of adding a
+duplicate. A statement whose only evidence is text the assistant wrote is
+dropped. A new row is a candidate: it enters the profile when you state it
+explicitly, when it is seen in a second session, or when you add it to
+`TASTE.md` yourself (§5.2). What changed is announced at your next prompt
+(`palate: since your last prompt — profile +1 −0; ledger: learned 1, …`), and
+the rows that entered the profile are handed to the model as a
+`<palate-learned>` block.
 
 Turn the automatic learner off with `distill.mode: off` (or
 `PALATE_DISTILL_MODE=off`), or only for some directories with
@@ -381,8 +409,56 @@ default), as a proposal awaiting `palate promote` (`review`), the human-gate
 option if you'd rather approve each one, or not at all from the hooks
 (`off`). Cost: one gateway call per explicit
 write; per distilled transcript batch, one extraction call plus one judge
-call for each statement it returns (the judge sees the whole profile, which
-is a few dozen lines for a personal taste store); one per consolidation pass.
+call for each statement it returns (the judge sees the profile plus at most
+20 other matching rows, so its prompt does not grow with the ledger); one
+gateway call per batch of 40 candidates in a dream pass (the profile is
+repeated in each).
+
+### 5.2 The profile, hand edits and the dream pass
+
+`TASTE.md` and the `SessionStart` block carry the same thing: the **profile**,
+a budgeted subset of your live preferences. A row is in it when it is `STATED`
+(you said it, or you added it to `TASTE.md`) or has been seen in two sessions,
+and it is not project-specific, not a restatement of your rulebook and not the
+losing side of a conflict. Every other live row stays in the ledger as a
+candidate. The budget is `token_budgets.prewarm_session` (default 2000
+estimated tokens, header included); rows are ranked, and what does not fit is
+left out whole. Why: [`docs/decisions.md`](docs/decisions.md) rows 35-37.
+
+```sh
+palate taste                # read back hand edits, re-render, print the profile
+palate taste --cut          # id and reason for each live row left out of it
+palate restore <id>         # bring back a forgotten row, or promote a candidate to STATED
+palate forget <id>          # soft: the row is retired and can be restored; --purge deletes it for good
+palate consolidate          # run the dream pass now (alias: palate dream)
+palate consolidate --rebuild   # one supervised pass over all live rows, no 40 % guard
+```
+
+Every row that enters or leaves the profile is an event with a reason, and
+the next notice lists them. **Hand edits:** you can edit `TASTE.md` directly.
+An added or reworded line becomes a `STATED` preference; a deleted line is
+forgotten softly. An edit Palate cannot apply safely (a large addition, a mass
+deletion, a file the assistant wrote) is held until you run
+`palate taste --accept-edits`, or discarded by plain `palate taste`. A held
+file with no profile to compare against (an older palate's full dump, a lost
+base) can only be discarded; a discarded edit is kept under `state/`.
+Accepting any held edit lists every retired or reworded line it would bring
+back, and any added lines beyond 10, and needs `palate taste --accept-edits
+--yes` for those; `palate taste --cut` and `--path` leave a hold alone. A `TASTE.md` you saved
+again after the hold is copied to `state/TASTE.after-hold-*.md` before the hold
+is accepted or discarded. Details:
+[`docs/TASTE-format.md`](docs/TASTE-format.md).
+
+| `config.yaml` key | Default | Effect |
+|---|---|---|
+| `token_budgets.prewarm_session` | 2000 | Size of the profile in estimated tokens, headers included. Raise it to fit more rows |
+| `token_budgets.prewarm_goal` | 0 | `0` keeps the per-prompt goal block off; any positive value turns it on |
+| `profile.exclude_project_specific` | true | Keep rows tagged as true only for one project out of the profile |
+| `profile.read_back_edits` | true | Read hand edits to `TASTE.md` back into the ledger |
+| `profile.prompt_block` | true | The per-prompt `<palate-learned>` block holds only rows that entered the profile; `false` also lists every row created or reworded |
+| `consolidate.every_events` | 25 | Events between automatic dream passes (`0` = never; `PALATE_CONSOLIDATE_EVERY`) |
+| `consolidate.timeout_seconds` | 300 | Gateway timeout for the dream pass: connect, then the longest silence with no bytes received; a call is capped at 4x (distiller and judge calls use `PALATE_LLM_TIMEOUT`) |
+| `consolidate.stale_candidate_days` | 30 | A candidate seen in only one session and older than this is forgotten by the dream pass (`0` = off) |
 
 ## 6. After install — smoke checklist (run for every harness)
 
@@ -392,6 +468,7 @@ palate doctor                         # green
 palate store "hello" && palate recall "hello" --json
 palate prefer "chat test" && palate recall "chat" --json
 palate prewarm | head -5              # <palate-prewarm …>
+palate taste --cut                  # why each live row is not in the profile (says so when all fit)
 palate sleep && palate stats
 palate verify capture --pure          # caveats: n=7, hash, --pure
 cat "$(palate doctor | sed -n 's/^taste: \([^ ]*\).*/\1/p')"   # TASTE.md is already current — no push needed

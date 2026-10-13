@@ -16,7 +16,7 @@ weights:
   imported: 0.4
 token_budgets:
   prewarm_session: 2000   # whole profile at SessionStart; lines are only ever dropped whole
-  prewarm_goal: 200
+  prewarm_goal: 0   # 0 = off (default; the per-prompt goal block is removed); any value above 0 turns it back on
   recall: 1000
   index_lines: 200
   index_bytes: 25600
@@ -46,3 +46,9 @@ judge:
   enabled: true   # with a gateway configured, the model judges every explicit write (PALATE_JUDGE=0 falls back to heuristics)
 consolidate:
   every_events: 25   # SessionStart auto-fires `palate consolidate` this many events after the last pass (0 = never; PALATE_CONSOLIDATE_EVERY)
+  timeout_seconds: 300   # bounds one gateway request of the dream pass (extended consolidate); each request streams
+  stale_candidate_days: 30   # a non-STATED candidate not repeated within this window is forgotten by the dream pass
+profile:
+  exclude_project_specific: true   # hide project_specific-tagged rows from TASTE.md/SessionStart
+  read_back_edits: true   # promote the owner's own hand edits to TASTE.md into STATED preferences
+  prompt_block: true   # true: the per-prompt <palate-learned> block lists only rows that entered the profile; false: every row created or reworded

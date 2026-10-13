@@ -4,15 +4,18 @@
 package distill
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +28,12 @@ import (
 // consolidation pass is not cut off mid-generation.
 const requestTimeout = 30 * time.Second
 
+// streamTotalCapFactor sets the backstop on one streamed call: the per-request
+// timeout times this factor (300 s -> 20 min for the dream pass). The request
+// timeout itself only counts connecting, response headers and the silence
+// between two stream reads, so a healthy long generation is not cut by it.
+const streamTotalCapFactor = 4
+
 // Gateway is a client for one OpenAI-compatible /v1/chat/completions
 // endpoint.
 type Gateway struct {
@@ -32,16 +41,21 @@ type Gateway struct {
 	Model      string
 	APIKey     string
 	HTTPClient *http.Client
-	// Timeout bounds one request. A zero value means requestTimeout. It is
-	// carried on the struct (not only on HTTPClient) because doRequest also
-	// derives a context deadline from it, and that deadline is what actually
-	// fires first on a long generation.
+	// Timeout is the per-request limit. A zero value means requestTimeout. For
+	// a streamed reply it bounds connecting plus response headers and then the
+	// silence between two reads; a non-stream JSON reply gets it as one
+	// deadline. doRequest enforces it with its own timers and strips
+	// HTTPClient.Timeout (which would count the whole body read) from the
+	// client it uses.
 	Timeout time.Duration
 
 	// statePath, when set, receives a last_gateway.json stamp after every
 	// successful call (doctor's staleness surface). Set only by
 	// NewGatewayFromEnv; directly-built gateways (tests) don't stamp.
 	statePath string
+
+	// totalCap, when set, overrides the default total cap on one streamed call.
+	totalCap time.Duration
 }
 
 // requestTimeoutOrDefault returns the gateway's per-request timeout.
@@ -61,6 +75,26 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
+	// Stream asks for SSE so bytes flow while the model reasons; a proxy such
+	// as Cloudflare cuts a connection that stays silent for ~100-125 s.
+	Stream        bool           `json:"stream"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// streamChunk is one SSE `data:` payload. Only content deltas are kept;
+// reasoning_content / reasoning deltas are ignored.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Error json.RawMessage `json:"error"`
 }
 
 type chatResponse struct {
@@ -86,7 +120,7 @@ func NewGatewayFromEnv(cfg config.Config) (*Gateway, bool) {
 		Endpoint:   cfg.LLM.Endpoint,
 		Model:      cfg.LLM.Model,
 		APIKey:     cfg.LLM.APIKey,
-		HTTPClient: &http.Client{Timeout: cfg.LLMTimeout()},
+		HTTPClient: &http.Client{},
 		Timeout:    cfg.LLMTimeout(),
 		statePath:  cfg.StatePath("last_gateway.json"),
 	}, true
@@ -118,7 +152,7 @@ func warnIfPlaintext(endpoint string) {
 func (g *Gateway) Complete(ctx context.Context, systemPrompt, userPrompt string, retries int, validate func(raw string) error) (string, error) {
 	client := g.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: g.requestTimeoutOrDefault()}
+		client = &http.Client{}
 	}
 
 	messages := []chatMessage{
@@ -163,14 +197,71 @@ func correctiveMessage(raw string) string {
 	return fmt.Sprintf("Your previous reply was not valid JSON: %s. Reply with only the JSON object.", snippet)
 }
 
+// limitError is the cancellation cause recorded when one of doRequest's own
+// limits fires, so the error names which limit it was.
+type limitError string
+
+func (e limitError) Error() string { return string(e) }
+
+// idleReader runs touch after every read that returned bytes, so each received
+// line (keep-alive comments and blank lines included) resets the idle timer.
+type idleReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (i idleReader) Read(p []byte) (int, error) {
+	n, err := i.r.Read(p)
+	if n > 0 {
+		i.touch()
+	}
+	return n, err
+}
+
+func (g *Gateway) totalCapOrDefault() time.Duration {
+	if g.totalCap > 0 {
+		return g.totalCap
+	}
+	return streamTotalCapFactor * g.requestTimeoutOrDefault()
+}
+
 func (g *Gateway) doRequest(ctx context.Context, client *http.Client, messages []chatMessage) (string, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, g.requestTimeoutOrDefault())
-	defer cancel()
+	timeout := g.requestTimeoutOrDefault()
+	total := g.totalCapOrDefault()
+	start := time.Now()
+
+	capCtx, capCancel := context.WithTimeoutCause(ctx, total,
+		limitError(fmt.Sprintf("stream exceeded the total cap of %s (%dx the request timeout)", total, streamTotalCapFactor)))
+	defer capCancel()
+	reqCtx, cancel := context.WithCancelCause(capCtx)
+	defer cancel(nil)
+
+	// client.Timeout would count the whole body read; the timers below replace it.
+	c := *client
+	c.Timeout = 0
+	client = &c
+
+	// limitHit returns the error for the limit that fired, or nil when none of
+	// ours did (a caller cancel or an ordinary failure keeps its own wording).
+	limitHit := func() error {
+		var le limitError
+		if errors.As(context.Cause(reqCtx), &le) {
+			return fmt.Errorf("gateway: %w", le)
+		}
+		return nil
+	}
+
+	limit := time.AfterFunc(timeout, func() {
+		cancel(limitError(fmt.Sprintf("no response headers within the request timeout of %s", timeout)))
+	})
+	defer func() { limit.Stop() }()
 
 	body, err := json.Marshal(chatRequest{
-		Model:       g.Model,
-		Messages:    messages,
-		Temperature: 0.2,
+		Model:         g.Model,
+		Messages:      messages,
+		Temperature:   0.2,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
 		return "", fmt.Errorf("gateway: marshal request: %w", err)
@@ -187,12 +278,40 @@ func (g *Gateway) doRequest(ctx context.Context, client *http.Client, messages [
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if e := limitHit(); e != nil {
+			return "", e
+		}
 		return "", fmt.Errorf("gateway: request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	limit.Stop()
+
+	if resp.StatusCode == http.StatusOK && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		idle := time.AfterFunc(timeout, func() {
+			cancel(limitError(fmt.Sprintf("stream idle: no data for %s (the request timeout)", timeout)))
+		})
+		limit = idle
+		content, err := readSSE(idleReader{r: resp.Body, touch: func() { idle.Reset(timeout) }})
+		if err != nil {
+			if e := limitHit(); e != nil {
+				return "", e
+			}
+			return "", err
+		}
+		g.stampSuccess()
+		return content, nil
+	}
+
+	// Non-stream reply: one deadline for the whole request, as before.
+	limit = time.AfterFunc(max(timeout-time.Since(start), 0), func() {
+		cancel(limitError(fmt.Sprintf("reply not complete within the request timeout of %s", timeout)))
+	})
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if e := limitHit(); e != nil {
+			return "", e
+		}
 		return "", fmt.Errorf("gateway: read response: %w", err)
 	}
 
@@ -210,6 +329,75 @@ func (g *Gateway) doRequest(ctx context.Context, client *http.Client, messages [
 
 	g.stampSuccess()
 	return parsed.Choices[0].Message.Content, nil
+}
+
+// readSSE assembles the assistant text from a chat-completions SSE stream:
+// it concatenates choices[0].delta.content. The stream is complete at
+// `data: [DONE]`, or at EOF when a choice already carried a finish_reason
+// (the owner's gateway ends its stream that way, without [DONE]). A stream
+// that ends with neither, carries an error event, stops on finish_reason
+// "length" or "content_filter", or yields no content is an error; a partial answer is never
+// returned as success.
+func readSSE(body io.Reader) (string, error) {
+	r := bufio.NewReader(body)
+	var out strings.Builder
+	finished := false
+	done := func() (string, error) {
+		if out.Len() == 0 {
+			return "", fmt.Errorf("gateway: stream ended with no content")
+		}
+		return out.String(), nil
+	}
+	for {
+		line, err := r.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "data:"); ok {
+			data := strings.TrimSpace(rest)
+			if data == "[DONE]" {
+				return done()
+			}
+			var chunk streamChunk
+			if jerr := json.Unmarshal([]byte(data), &chunk); jerr != nil {
+				return "", fmt.Errorf("gateway: decode stream event: %w", jerr)
+			}
+			if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+				return "", fmt.Errorf("gateway: stream error: %s", truncate(streamErrorMessage(chunk.Error), 400))
+			}
+			if len(chunk.Choices) > 0 {
+				out.WriteString(chunk.Choices[0].Delta.Content)
+				switch chunk.Choices[0].FinishReason {
+				case "":
+				case "length":
+					return "", fmt.Errorf("gateway: stream stopped at the length limit (finish_reason length)")
+				case "content_filter":
+					return "", fmt.Errorf("gateway: stream stopped by the content filter (finish_reason content_filter)")
+				default:
+					finished = true
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				if finished {
+					return done()
+				}
+				return "", fmt.Errorf("gateway: stream ended before [DONE]")
+			}
+			return "", fmt.Errorf("gateway: read stream: %w", err)
+		}
+	}
+}
+
+// streamErrorMessage returns error.message when the event carries one, else
+// the raw error value.
+func streamErrorMessage(raw json.RawMessage) string {
+	var e struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &e) == nil && e.Message != "" {
+		return e.Message
+	}
+	return string(raw)
 }
 
 // gatewayStamp is what state/last_gateway.json records after every

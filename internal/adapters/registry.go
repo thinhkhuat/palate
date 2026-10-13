@@ -1,11 +1,11 @@
 package adapters
 
 type Adapter struct {
-	Name        string `json:"name"`
-	Capture     string `json:"capture"`
-	Injection   string `json:"injection"`
-	Install     string `json:"install"`
-	Verified    bool   `json:"verified"`
+	Name      string `json:"name"`
+	Capture   string `json:"capture"`
+	Injection string `json:"injection"`
+	Install   string `json:"install"`
+	Verified  bool   `json:"verified"`
 }
 
 var Registry = []Adapter{

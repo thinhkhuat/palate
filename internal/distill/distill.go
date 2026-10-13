@@ -88,8 +88,14 @@ var Judge func(ctx context.Context, conn *sql.DB, cfg config.Config, s Distilled
 // through learn.CreateProposal in review mode or learn.ApplySignal
 // otherwise, with the model's own per-statement confidence as the seed
 // weight. It returns the counts applied and dropped.
-func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledStatement) (applied, dropped int) {
+//
+// sessionKey is required (phase-03 req 1): it rides every statement's Session
+// field into the create/reinforce event, and the judge seam, so
+// learn.SessionCounts can tell "seen again in a later session" from "seen twice
+// in the same batch". A caller with no real session passes "".
+func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledStatement, session string) (applied, dropped int) {
 	for _, s := range statements {
+		s.Session = session
 		if scan := safety.Scan(s.Statement); scan.Flagged {
 			storage.BumpDrop(conn, "llm_distilled_"+scan.Reason)
 			dropped++
@@ -123,11 +129,13 @@ func ApplyDistilled(conn *sql.DB, cfg config.Config, statements []DistilledState
 			continue
 		}
 		sig := learn.Signal{
-			Type:      learn.SignalLLMDistilled,
-			Statement: s.Statement,
-			Category:  s.Category,
-			Weight:    s.Confidence,
-			Evidence:  safety.Censor(s.Evidence),
+			Type:            learn.SignalLLMDistilled,
+			Statement:       s.Statement,
+			Category:        s.Category,
+			Weight:          s.Confidence,
+			Evidence:        safety.Censor(s.Evidence),
+			Session:         s.Session,
+			ProjectSpecific: s.Project,
 		}
 		if _, err := learn.ApplySignal(conn, cfg, sig, nil); err != nil {
 			storage.BumpDrop(conn, "llm_distilled_apply_error")
@@ -148,4 +156,51 @@ func isVerbatimEvidence(statement, evidence string) bool {
 	s := strings.TrimSpace(statement)
 	e := strings.TrimSpace(evidence)
 	return s != "" && s == e
+}
+
+// minEvidenceQuoteLen is the shortest (normalised) evidence quote the
+// assistant-only filter acts on (phase-03 req 4): a shorter quote matches too
+// much text in either speaker's messages to safely attribute to one of them.
+const minEvidenceQuoteLen = 12
+
+// filterAssistantOnlyEvidence drops a distilled statement whose evidence
+// quote (normalised: lower-cased, whitespace collapsed) appears in an
+// assistant message of batch but in no user message of batch — text the
+// assistant itself wrote, including its own summaries, is never evidence of
+// what the user wants (req 4). A quote shorter than minEvidenceQuoteLen, or
+// one that matches no message at all (a paraphrase), is kept: origin cannot
+// be told from the quote alone. Every drop bumps
+// llm_distilled_assistant_evidence.
+func filterAssistantOnlyEvidence(conn *sql.DB, batch []Message, statements []DistilledStatement) (kept []DistilledStatement, dropped int) {
+	var userBlob, assistantBlob strings.Builder
+	for _, m := range batch {
+		norm := normalizeEvidenceText(m.Content)
+		if m.Role == "assistant" {
+			assistantBlob.WriteString(norm)
+			assistantBlob.WriteByte('\n')
+			continue
+		}
+		userBlob.WriteString(norm)
+		userBlob.WriteByte('\n')
+	}
+	user, assistant := userBlob.String(), assistantBlob.String()
+
+	kept = make([]DistilledStatement, 0, len(statements))
+	for _, s := range statements {
+		quote := normalizeEvidenceText(s.Evidence)
+		if len(quote) >= minEvidenceQuoteLen && strings.Contains(assistant, quote) && !strings.Contains(user, quote) {
+			storage.BumpDrop(conn, "llm_distilled_assistant_evidence")
+			dropped++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept, dropped
+}
+
+// normalizeEvidenceText lower-cases s and collapses its whitespace, so a
+// quote and its source text compare on content, not on incidental spacing or
+// case.
+func normalizeEvidenceText(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }

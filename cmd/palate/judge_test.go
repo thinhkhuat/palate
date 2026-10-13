@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -155,18 +156,38 @@ func TestConsolidateVerbAndPromote(t *testing.T) {
 		t.Fatalf("consolidate without a gateway must refuse: %v", err)
 	}
 	storage.Close()
-	for _, s := range []string{"use table-driven tests", "keep tests fast", "use golden files"} {
-		if _, err := runCLI(t, "prefer", s); err != nil {
-			t.Fatal(err)
-		}
-		storage.Close()
-	}
+	// Distilled rows: STATED text is never rewritten by a pass. "use table-driven
+	// tests" is backed by two sessions, so it is a profile member and its
+	// rewrite reaches TASTE.md; the other two are candidates that make the pass
+	// call the model.
 	cfg := loadConfig()
 	db := openDB(cfg)
-	var id string
-	_ = db.QueryRow(`SELECT id FROM preferences WHERE statement='use table-driven tests'`).Scan(&id)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i, row := range []struct {
+		id, stmt string
+		sessions []string
+	}{
+		{"tdt", "use table-driven tests", []string{"s1", "s2"}},
+		{"fast", "keep tests fast", []string{"s3"}},
+		{"gold", "use golden files", []string{"s4"}},
+	} {
+		if _, err := db.Exec(`INSERT INTO preferences(id, category, statement, confidence, importance, source, provenance, valid_from, created_at, last_reinforced_at, reinforcement_count, trust_tier, veracity)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.id, "Testing", row.stmt, 0.6-0.01*float64(i), 0.5, "llm_distilled", `["llm_distilled"]`, now, now, now, 0, "DISTILLED", "llm_distilled"); err != nil {
+			t.Fatal(err)
+		}
+		for j, sess := range row.sessions {
+			typ := "create"
+			if j > 0 {
+				typ = "reinforce"
+			}
+			if err := storage.AppendEvent(db, typ, fmt.Sprintf(`{"id":%q,"c":0.6,"signal":"llm_distilled","session":%q}`, row.id, sess)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	id := "tdt"
 	storage.Close()
-	srv := actionsServer(t, []map[string]interface{}{{"type": "rewrite", "id": id, "statement": "Prefers table-driven tests.", "reason": "third person"}})
+	srv := actionsServer(t, []map[string]interface{}{{"type": "rewrite", "id": id, "statement": "Table-driven tests.", "reason": "third person"}})
 	t.Setenv("PALATE_LLM_ENDPOINT", srv.URL+"/v1/chat/completions")
 	t.Setenv("PALATE_LLM_MODEL", "fake")
 	if err := os.WriteFile("config.yaml", []byte("distill:\n  mode: review\n"), 0o644); err != nil {
@@ -188,7 +209,7 @@ func TestConsolidateVerbAndPromote(t *testing.T) {
 		t.Fatalf("promote: %v", err)
 	}
 	storage.Close()
-	if got := tasteOnDisk(t); !strings.Contains(got, "Prefers table-driven tests.") {
+	if got := tasteOnDisk(t); !strings.Contains(got, "- Table-driven tests. Confidence") {
 		t.Fatalf("promoted rewrite must reach TASTE.md:\n%s", got)
 	}
 	storage.Close()
@@ -199,20 +220,22 @@ func TestConsolidateVerbAndPromote(t *testing.T) {
 }
 
 // TestAutoConsolidateOnSessionStart: SessionStart spawns the pass only past
-// the watermark, and only with a gateway configured.
+// the watermark, and only with a gateway configured. With no transcript there
+// is no learner to carry the pass, so a plain `consolidate` child is spawned;
+// TestSessionStartSpawnsOneChild covers the transcript case.
 func TestAutoConsolidateOnSessionStart(t *testing.T) {
 	setupTempProject(t)
 	installSpawnSpy(t)
 	n := installConsolidateSpy(t)
 	t.Setenv("PALATE_CONSOLIDATE_EVERY", "2")
 
-	runHook(t, `{"session_id":"s","transcript_path":"/tmp/t.jsonl"}`, "hook", "session-start")
+	runHook(t, `{"session_id":"s"}`, "hook", "session-start")
 	if *n != 0 {
 		t.Fatal("no gateway → never auto-fire")
 	}
 	t.Setenv("PALATE_LLM_ENDPOINT", "http://127.0.0.1:9/v1/chat/completions")
 	t.Setenv("PALATE_LLM_MODEL", "x")
-	runHook(t, `{"session_id":"s","transcript_path":"/tmp/t.jsonl"}`, "hook", "session-start")
+	runHook(t, `{"session_id":"s"}`, "hook", "session-start")
 	if *n != 0 {
 		t.Fatal("0 events since the last pass → not due")
 	}
@@ -225,7 +248,7 @@ func TestAutoConsolidateOnSessionStart(t *testing.T) {
 	}
 	t.Setenv("PALATE_JUDGE", "")
 	start := time.Now()
-	runHook(t, `{"session_id":"s","transcript_path":"/tmp/t.jsonl"}`, "hook", "session-start")
+	runHook(t, `{"session_id":"s"}`, "hook", "session-start")
 	if *n != 1 {
 		t.Fatalf("2 events, every 2 → must auto-fire once, got %d", *n)
 	}

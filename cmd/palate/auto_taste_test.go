@@ -28,7 +28,7 @@ func freshRender(t *testing.T) string {
 	t.Helper()
 	cfg := loadConfig()
 	db := openDB(cfg)
-	out, err := render.Render(db, render.RenderOptions{})
+	out, err := render.Render(db, cfg, render.RenderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +173,18 @@ func TestBackupBeforeForgetAndPull(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("pull must add a second backup, got %v", entries)
 	}
-	if got := tasteOnDisk(t); !strings.Contains(got, "use golden files") || !strings.Contains(got, "Confidence: 0.40") {
-		t.Fatalf("auto TASTE.md must reflect the pull immediately:\n%s", got)
+	// A one-session IMPORTED row stays a candidate under the stricter intake
+	// rule (phase-01 eligibility: STATED or >= 2 distinct sessions) — it is
+	// stored immediately, but TASTE.md only shows it once it is seen again.
+	out, err := runCLI(t, "export")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if !strings.Contains(out, "use golden files") || !strings.Contains(out, `"trust_tier": "IMPORTED"`) {
+		t.Fatalf("pull must store the imported row: %s", out)
 	}
 	storage.Close()
-	out, _ := runCLI(t, "doctor")
+	out, _ = runCLI(t, "doctor")
 	if !strings.Contains(out, "backup: newest ") {
 		t.Fatalf("doctor must name the newest backup:\n%s", out)
 	}
@@ -206,8 +213,14 @@ func TestAutoTasteAfterLearnSession(t *testing.T) {
 		t.Fatalf("learn session: %v\n%s", err, out)
 	}
 	storage.Close()
-	got := tasteOnDisk(t)
-	if !strings.Contains(got, "Prefers table-driven tests") || !strings.Contains(got, "Confidence: 0.90") {
-		t.Fatalf("TASTE.md must reflect the distilled batch:\n%s", got)
+	// A one-session DISTILLED row is a candidate, not a profile member yet
+	// (phase-01 eligibility needs STATED or >= 2 distinct sessions) — the
+	// detached child still stores it and its auto-render still fires.
+	out, err := runCLI(t, "export")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if !strings.Contains(out, "Prefers table-driven tests") || !strings.Contains(out, `"confidence": 0.9`) {
+		t.Fatalf("learn session must store the distilled batch:\n%s", out)
 	}
 }

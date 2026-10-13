@@ -357,16 +357,23 @@ func LearnRepoKeyed(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Ga
 	}
 
 	newestSHA := commits[len(commits)-1].SHA
+	// The session key ties every event this window produces to this exact
+	// commit range (phase-03 req 1): re-running the same range (a retried
+	// distill) yields the same key, a new range a different one.
+	sessionKey := gitSessionKey(cursorKey, newestSHA)
 
-	prefs, err := learn.ListPreferences(conn, false)
+	evidenceText := FormatGitEvidence(signals)
+	// The compare set replaces the whole live ledger here too (req 2): the
+	// same bound applies to repo learning as to transcript learning.
+	compareSet, err := learn.CompareSet(conn, cfg, evidenceText)
 	if err != nil {
-		return len(signals), Summary{}, fmt.Errorf("list preferences: %w", err)
+		return len(signals), Summary{}, fmt.Errorf("compare set: %w", err)
 	}
 
 	rulebookBlock, _ := learn.LoadRulebook(cfg)
-	result, distillErr := Distill(ctx, conn, gw, prefs, "", FormatGitEvidence(signals), rulebookBlock)
+	result, distillErr := Distill(ctx, conn, gw, compareSet, "", evidenceText, rulebookBlock)
 	if distillErr == nil {
-		applied, dropped := ApplyDistilled(conn, cfg, result.Statements)
+		applied, dropped := ApplyDistilled(conn, cfg, result.Statements, sessionKey)
 		if err := SetCursor(conn, "git", cursorKey, newestSHA); err != nil {
 			return len(signals), Summary{}, fmt.Errorf("set cursor: %w", err)
 		}
@@ -386,4 +393,12 @@ func LearnRepoKeyed(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Ga
 	}
 	storage.BumpDrop(conn, "llm_distilled_window_abandoned")
 	return len(signals), Summary{Reason: distillErr.Error(), Advanced: true, Abandoned: true}, nil
+}
+
+// gitSessionKey computes a repo-learning window's session key (phase-03 req
+// 1): "git:" plus a short hash of cursorKey (the repo path, or a clone's
+// source URL) joined with the newest commit SHA the window covers, so a
+// re-run over the same range always yields the same key.
+func gitSessionKey(cursorKey, newestSHA string) string {
+	return "git:" + shortSHA256Hex(cursorKey+newestSHA)
 }

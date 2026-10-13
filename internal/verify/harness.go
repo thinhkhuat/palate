@@ -12,12 +12,12 @@ import (
 )
 
 type Report struct {
-	Version       string            `json:"version"`
-	ScenariosHash string            `json:"scenarios_hash"`
-	Judge         string            `json:"judge"`
-	Pure          bool              `json:"pure"`
+	Version       string             `json:"version"`
+	ScenariosHash string             `json:"scenarios_hash"`
+	Judge         string             `json:"judge"`
+	Pure          bool               `json:"pure"`
 	CaptureRates  map[string]float64 `json:"capture_rates"`
-	Caveats       string            `json:"caveats"`
+	Caveats       string             `json:"caveats"`
 }
 
 func ScenariosHash() string {

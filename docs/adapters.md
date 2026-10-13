@@ -4,10 +4,10 @@
 
 | Harness | Capture capability | Injection path | Install |
 |---------|-------------------|----------------|---------|
-| Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart + UserPromptSubmit additionalContext) | `palate hook install` |
-| Command Code | hook-based learning (SessionStart/PostToolUse/Stop — Command Code has no `UserPromptSubmit` or `PreCompact` event; the per-turn surface is the mod's `transformInput`) | push prewarm (SessionStart additionalContext; per-turn context via the mod) | `palate hook install` |
+| Claude Code | hook-based learning (PostToolUse/UserPromptSubmit/Stop/SessionStart) | push prewarm (SessionStart: the budgeted profile; UserPromptSubmit additionalContext: the `<palate-learned>` block, plus a goal block only if `token_budgets.prewarm_goal` is above 0) | `palate hook install` |
+| Command Code | hook-based learning (SessionStart/PostToolUse/Stop — Command Code has no `UserPromptSubmit` or `PreCompact` event; the per-turn surface is the mod's `transformInput`) | push prewarm (SessionStart additionalContext: the budgeted profile; per-turn context via the mod. With `token_budgets.prewarm_goal: 0`, the default, a per-turn mod that calls `palate prewarm --scope goal` gets nothing until the owner raises that budget) | `palate hook install` |
 | ZCode | hook-based learning (SessionStart/UserPromptSubmit/PostToolUse/Stop — no PreCompact event) | push prewarm (strict-JSON `additionalContext`; `hooks.enabled: true` required) | `palate hook install` |
-| Cline | hook-based learning (TaskStart/TaskResume/UserPromptSubmit/PostToolUse/TaskComplete/TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume + UserPromptSubmit `contextModification`) | `palate hook install --harness cline` |
+| Cline | hook-based learning (TaskStart/TaskResume/UserPromptSubmit/PostToolUse/TaskComplete/TaskCancel — file hooks in `~/.cline/hooks`; no Stop/PreCompact file-hook dispatch) | push prewarm (TaskStart/TaskResume: the budgeted profile; UserPromptSubmit `contextModification`: the learned block) | `palate hook install --harness cline` |
 | OMP (oh-my-pi) | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | Hermes | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
 | Pi | recall-only (hooks unverified) — see `docs/adapters/verification.md` | MCP recall | `palate serve` |
