@@ -53,7 +53,7 @@ Respond with ONLY a JSON object, no markdown fence, no prose before or after:
      "confidence": <0.0-1.0>,
      "rulebook": <true|false>,
      "project": <true|false>,
-     "evidence": "<short quote or paraphrase from NEW evidence backing this>"}
+     "evidence": "<the USER's own words from NEW evidence, quoted exactly; join several quotes with " / ". When the user approved an assistant proposal, quote the proposal exactly and the user's reply line: "<proposal>" / "<reply>">"}
   ]}
 Only record clear, repeated, or explicitly-stated preferences. When nothing
 durable is found, respond with exactly: {"preferences": []}`

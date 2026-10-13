@@ -302,10 +302,11 @@ func TestApplyDistilledThreadsSession(t *testing.T) {
 	}
 }
 
-// TestAssistantOnlyEvidenceDropped covers phase-03 req 4's three cases:
-// evidence found only in an assistant message is dropped and counted;
-// evidence also found in a user message is kept; a paraphrase found in
-// neither is kept, since origin cannot be told.
+// TestAssistantOnlyEvidenceDropped covers the guard's three cases: evidence
+// found only in an assistant message is dropped and counted as assistant
+// evidence; evidence found in a user message is kept; a paraphrase found in
+// neither is dropped (fail closed) and counted as ungrounded, since nothing
+// shows the user said it.
 func TestAssistantOnlyEvidenceDropped(t *testing.T) {
 	batch := []Message{
 		{Role: "user", Content: "Please always use table-driven tests here."},
@@ -318,16 +319,16 @@ func TestAssistantOnlyEvidenceDropped(t *testing.T) {
 	}
 
 	db := testDB(t)
-	kept, dropped := filterAssistantOnlyEvidence(db, batch, statements)
-	if dropped != 1 {
-		t.Fatalf("dropped = %d, want 1", dropped)
+	kept, dropped := filterAssistantOnlyEvidence(db, nil, batch, statements)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want 2", dropped)
 	}
 	var keptStatements []string
 	for _, s := range kept {
 		keptStatements = append(keptStatements, s.Statement)
 	}
-	if len(kept) != 2 || keptStatements[0] != "Prefers table-driven tests." || keptStatements[1] != "Prefers small functions." {
-		t.Fatalf("kept = %v, want the user-evidenced and the unattributable paraphrase, not the assistant-only one", keptStatements)
+	if len(kept) != 1 || keptStatements[0] != "Prefers table-driven tests." {
+		t.Fatalf("kept = %v, want only the user-evidenced statement", keptStatements)
 	}
 
 	var drops int
@@ -336,6 +337,12 @@ func TestAssistantOnlyEvidenceDropped(t *testing.T) {
 	}
 	if drops != 1 {
 		t.Fatalf("llm_distilled_assistant_evidence drops = %d, want 1", drops)
+	}
+	if err := db.QueryRow(`SELECT drops FROM capture_counters WHERE signal_type='llm_distilled_ungrounded_evidence'`).Scan(&drops); err != nil {
+		t.Fatalf("ungrounded capture_counters row missing: %v", err)
+	}
+	if drops != 1 {
+		t.Fatalf("llm_distilled_ungrounded_evidence drops = %d, want 1", drops)
 	}
 }
 

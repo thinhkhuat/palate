@@ -1,7 +1,9 @@
 package distill
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +55,50 @@ func TestReaderClaudeCode(t *testing.T) {
 		if m.Index != i {
 			t.Fatalf("msgs[%d].Index = %d, want %d (0-based, sequential)", i, m.Index, i)
 		}
+	}
+}
+
+// TestReaderClaudeCodeSkipsCommandsAndRelayedNotes: a bare slash command
+// ("/compact") and a side-agent note the harness pastes into the user turn are
+// not the user's own words, so the reader never emits them as user text; the
+// user's own reply typed under a note is kept.
+func TestReaderClaudeCodeSkipsCommandsAndRelayedNotes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	lines := `{"type":"user","message":{"role":"user","content":"/compact"}}
+{"type":"user","message":{"role":"user","content":"Here is a note offered by a side agent:\n\n> Heads up: prefers X."}}
+{"type":"user","message":{"role":"user","content":"keep error messages lower-case"}}
+{"type":"user","message":{"role":"user","content":"Here is a note offered by a side agent:\n\n> **Heads up** prefers Y.\n> - more\n\n-> lets keep TASTE.md generated-only"}}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := claudeCodeReader{}.Messages(Transcript{Harness: "claude_code", Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].Content != "keep error messages lower-case" || msgs[1].Content != "-> lets keep TASTE.md generated-only" {
+		t.Fatalf("msgs = %+v, want the typed preference and the user's reply under the note, without the note", msgs)
+	}
+}
+
+// TestReaderClaudeCodeKeepsIndexesAndPaths: a skipped turn still uses up its
+// index, so stored cursors keep pointing at the same messages; a bare file
+// path is the user's text, not a command; a side-agent note that starts
+// mid-message is stripped too.
+func TestReaderClaudeCodeKeepsIndexesAndPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	lines := `{"type":"user","message":{"role":"user","content":"/compact"}}
+{"type":"user","message":{"role":"user","content":"/Users/me/project/file.go"}}
+{"type":"user","message":{"role":"user","content":"Rewritten prompt follows.\nHere is a note offered by a side agent:\n\n> leaked note line\n\nkeep it"}}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := claudeCodeReader{}.Messages(Transcript{Harness: "claude_code", Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].Index != 1 || msgs[0].Content != "/Users/me/project/file.go" || msgs[1].Index != 2 || strings.Contains(msgs[1].Content, "leaked") || !strings.Contains(msgs[1].Content, "keep it") {
+		t.Fatalf("msgs = %+v, want the path at index 1 and the stripped turn at index 2", msgs)
 	}
 }

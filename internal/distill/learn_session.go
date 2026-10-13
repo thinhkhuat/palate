@@ -102,10 +102,10 @@ func LearnSession(ctx context.Context, conn *sql.DB, cfg config.Config, gw *Gate
 		result, distillErr := Distill(ctx, conn, gw, compareSet, FormatEvidence(t.Harness, prev), batchText, rulebookBlock)
 		sum.Batches++
 		if distillErr == nil {
-			// A statement whose evidence quote lives only in an assistant
-			// message (never in a user one) is dropped before it can ever
-			// reach ApplyDistilled (phase-03 req 4).
-			kept, filtered := filterAssistantOnlyEvidence(conn, batch, result.Statements)
+			// A statement whose evidence is not grounded in what the user
+			// typed (or in an assistant proposal the user approved in the
+			// very next reply) is dropped before it can reach ApplyDistilled.
+			kept, filtered := filterAssistantOnlyEvidence(conn, prev, batch, result.Statements)
 			applied, dropped := ApplyDistilled(conn, cfg, kept, sessionKey)
 			sum.Applied += applied
 			sum.Dropped += dropped + filtered

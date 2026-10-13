@@ -3,6 +3,7 @@ package distill
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -76,6 +77,10 @@ func (claudeCodeReader) Messages(t Transcript) ([]Message, error) {
 			if s == "" || strings.HasPrefix(s, "<") {
 				return // <command-message>/<teammate-message>/<system-reminder>/tool-wrapper text
 			}
+			if s = userOwnText(s); s == "" {
+				idx++  // keep later indexes, and so stored cursors, unchanged
+				return // a bare /command, or a side-agent note with no reply typed under it
+			}
 			out = append(out, Message{Role: "user", Content: s, Index: idx})
 			idx++
 		case "assistant":
@@ -100,4 +105,39 @@ func (claudeCodeReader) Messages(t Transcript) ([]Message, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// sideAgentLeadIn opens a note the harness pastes into the user turn on a
+// side agent's behalf; the note's own lines follow as a "> " block quote.
+const sideAgentLeadIn = "Here is a note offered by a side agent"
+
+// slashCommand matches a bare harness command such as "/compact" or
+// "/plugin:taste"; a file path ("/Users/me/x.go") is the user's text.
+var slashCommand = regexp.MustCompile(`^/[A-Za-z][\w:.-]*$`)
+
+// userOwnText returns the part of a user turn the user typed as taste
+// evidence: "" for a bare slash command, and for a turn carrying a side-agent
+// note (its lead-in anywhere in the turn) everything except the lead-in line
+// and the note's "> " lines.
+func userOwnText(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if slashCommand.MatchString(trimmed) {
+		return ""
+	}
+	if !strings.Contains(trimmed, sideAgentLeadIn) {
+		return s
+	}
+	var own []string
+	inNote := false
+	for _, line := range strings.Split(trimmed, "\n") {
+		l := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(l, sideAgentLeadIn):
+			inNote = true
+		case inNote && strings.HasPrefix(l, ">"):
+		default:
+			own = append(own, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(own, "\n"))
 }
