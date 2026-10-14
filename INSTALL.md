@@ -6,9 +6,9 @@ Palate is a **single Go binary, no CGO, SQLite-only**. Two install paths — pic
 
 | Path | Command | When to use |
 |------|---------|-------------|
-| Install script | `gh api repos/thinhkhuat/palate/contents/install.sh -H 'Accept: application/vnd.github.raw' \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. Needs an authenticated `gh` or `GITHUB_TOKEN`/`GH_TOKEN` (private repo). `sh install.sh v0.4.1` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
-| From source | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ and git access to the private repo |
-| Agent (no prompt) | `GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest && palate init && palate doctor` | CI / agent bootstrap — single shot, no TTY |
+| Install script | `curl -fsSL https://raw.githubusercontent.com/thinhkhuat/palate/main/install.sh \| sh` (or `sh install.sh` from a clone) | Installs the latest GitHub Release binary. No auth needed. `sh install.sh v0.4.1` pins a tag; `PALATE_INSTALL_DIR` overrides `/usr/local/bin` |
+| From source | `go install github.com/thinhkhuat/palate/cmd/palate@latest` | You have Go 1.26+ |
+| Agent (no prompt) | `go install github.com/thinhkhuat/palate/cmd/palate@latest && palate init && palate doctor` | CI / agent bootstrap — single shot, no TTY |
 
 Verify:
 

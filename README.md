@@ -50,7 +50,7 @@ use `palate hook install` — see [INSTALL.md](INSTALL.md) §2.1.
 ## 30-second start (no plugin — manual wiring)
 
 ```sh
-sh install.sh                           # private repo: needs `gh auth login` or GITHUB_TOKEN; or: GOPRIVATE=github.com/thinhkhuat go install github.com/thinhkhuat/palate/cmd/palate@latest
+sh install.sh                           # or: go install github.com/thinhkhuat/palate/cmd/palate@latest
 palate init
 palate doctor                          # → green? (sqlite, fts5, vector, 14 adapters, scanner)
 palate hook install                    # Claude Code + Command Code + ZCode + Cline — one command
@@ -168,7 +168,7 @@ Details: [`docs/security.md`](docs/security.md)
 - **Adapters — the single source:** [`docs/adapters.md`](docs/adapters.md)
 - **Verification gate (honest row per harness):** [`docs/adapters/verification.md`](docs/adapters/verification.md)
 - **Architecture / TASTE format / Benchmarking:** [`docs/architecture.md`](docs/architecture.md) · [`docs/TASTE-format.md`](docs/TASTE-format.md) · [`docs/benchmarking.md`](docs/benchmarking.md)
-- **Blueprint (original design, frozen 2026-08-15; historical, not current authority):** [`open-taste-blueprint.md`](open-taste-blueprint.md) v2.1 · **Decisions:** [`docs/decisions.md`](docs/decisions.md) · **Plan:** [`plans/260815-1906-palate-v21-open-taste-engine/plan.md`](plans/260815-1906-palate-v21-open-taste-engine/plan.md) (13/13, 133/133)
+- **Blueprint (original design, frozen 2026-08-15; historical, not current authority):** [`open-taste-blueprint.md`](open-taste-blueprint.md) v2.1 · **Decisions:** [`docs/decisions.md`](docs/decisions.md)
 
 ---
 
@@ -178,7 +178,7 @@ Details: [`docs/security.md`](docs/security.md)
 go vet ./... && go test ./... && CGO_ENABLED=0 go build -o /tmp/palate ./cmd/palate && /tmp/palate doctor
 ```
 
-Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: pushing a `v*` tag runs `.github/workflows/release.yml` (GoReleaser → GitHub Release with `palate_<ver>_<os>_<arch>.tar.gz` + `checksums.txt`, which `install.sh` downloads through an authenticated `gh` or `GITHUB_TOKEN`, the repo being private). Install paths: `install.sh` (authenticated, private repo) or `go install` with `GOPRIVATE`.
+Build: `CGO_ENABLED=0` across macOS/Linux × amd64/arm64. CI: `go vet`, `go test`, `CGO_ENABLED=0 go build`, `palate doctor`. Release: pushing a `v*` tag runs `.github/workflows/release.yml` (GoReleaser → GitHub Release with `palate_<ver>_<os>_<arch>.tar.gz` + `checksums.txt`, which `install.sh` downloads through `gh` when authenticated, else plain `curl`). Install paths: `install.sh` or `go install`.
 
 ## License
 

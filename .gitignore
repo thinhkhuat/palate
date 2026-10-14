@@ -26,3 +26,11 @@ __pycache__/
 
 # Raw Command Code traffic captures (full session context, local only)
 plans/reports/*/_RESEARCH_ARTIFACTS/cc-capture/
+
+# Internal working records: plans, reports, and finished-task gate artifacts stay
+# local (stripped from history before the repo went public, docs/decisions.md #53).
+/plans/
+/GATES.md
+/scripts/verify-taste-fix/
+/scripts/verify-cline/
+/map_config.py
