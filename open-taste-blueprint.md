@@ -15,7 +15,7 @@ tags: [taste, memory, agent, mcp, blueprint, open-source, go, sqlite]
 > **Historical design record — not current authority (note added 2026-09-12).** This blueprint is the 2026-08-15 design as planned. The code has moved on; where the two disagree, the code, `docs/architecture.md` and `docs/decisions.md` win. Items below that were built and later **removed** from the codebase:
 >
 > - **Sync / E2EE (SEC-002, TASK-802, DEP-006, FILE-010, `sync.md` in TASK-1001)** — `internal/sync` and `docs/sync.md` were deleted on 2026-09-12 and `golang.org/x/crypto` dropped; `palate push`/`pull` only render and reimport `TASTE.md`. Reason and revert path: `docs/decisions.md` row 7.
-> - **Adapter helper files (FILE-014)** — `pi.go`, `openclaw.go`, `opencode.go`, `codex.go`, `cursor.go`, `windsurf.go`, `openwebui.go` (plus `omp.go`, `hermes.go`) were deleted on 2026-09-11 as uncalled code; the harness matrix lives in `internal/adapters/registry.go`. See `plans/reports/review2-fix-report.md`.
+> - **Adapter helper files (FILE-014)** — `pi.go`, `openclaw.go`, `opencode.go`, `codex.go`, `cursor.go`, `windsurf.go`, `openwebui.go` (plus `omp.go`, `hermes.go`) were deleted on 2026-09-11 as uncalled code; the harness matrix lives in `internal/adapters/registry.go`.
 >
 > Do not re-create these from this document. Treat every task row below as "as planned in August", not "as shipped".
 

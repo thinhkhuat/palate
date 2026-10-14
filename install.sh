@@ -26,6 +26,7 @@ else
     # github.com/<repo>/releases/latest redirects to .../releases/tag/<tag>.
     URL=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || fail "Release lookup failed."
     TAG=${URL##*/}
+    case "$TAG" in v*) ;; *) fail "No published release found for $REPO." ;; esac
   fi
   ASSET="palate_${TAG#v}_${OS}_${ARCH}.tar.gz"
   curl -fsSL -o "$TMP/$ASSET" "https://github.com/$REPO/releases/download/$TAG/$ASSET" || fail "No asset $ASSET in release $TAG."
